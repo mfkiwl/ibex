@@ -367,7 +367,8 @@ def run_sim_commands(command_list, use_lsf):
         for desc, cmd, dirname in command_list:
             os.makedirs(dirname, exist_ok=True)
             cmds.append(cmd)
-        run_parallel_cmd(cmds, 600, check_return_code=True)
+        run_parallel_cmd(cmds, timeout_s=600, exit_on_error=0,
+                         check_return_code=True)
         return
 
     # We're not in LSF mode, so we'll create the output directories as we go.
@@ -376,7 +377,8 @@ def run_sim_commands(command_list, use_lsf):
     for desc, cmd, dirname in command_list:
         os.makedirs(dirname, exist_ok=True)
         logging.info("Running " + desc)
-        run_cmd(cmd, 600, check_return_code=True)
+        run_cmd(cmd, timeout_s=600, exit_on_error=0,
+                check_return_code=True)
 
 
 def rtl_sim(sim_cmd, test_list, seed_gen, opts,
@@ -436,7 +438,7 @@ def compare_test_run(test, idx, iss, output_dir, report):
     with open(report, 'a') as report_fd:
         test_name = test['test']
         elf = os.path.join(output_dir,
-                           'instr_gen/asm_test/{}.{}.o'.format(test_name, idx))
+                           'instr_gen/asm_test/{}_{}.o'.format(test_name, idx))
 
         logging.info("Comparing %s/DUT sim result : %s" % (iss, elf))
 
@@ -706,7 +708,7 @@ def main():
             raise RuntimeError("Cannot find %s in %s" %
                                (args.test, args.testlist))
 
-        matched_list = filter_tests_by_config(args.ibex_config, matched_list);
+        matched_list = filter_tests_by_config(args.ibex_config, matched_list)
 
     # Compile TB
     if steps['compile']:
