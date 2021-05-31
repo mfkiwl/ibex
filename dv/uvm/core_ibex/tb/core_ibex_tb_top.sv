@@ -57,6 +57,7 @@ module core_ibex_tb_top;
   parameter bit ICache                   = 1'b0;
   parameter bit ICacheECC                = 1'b0;
   parameter bit BranchPredictor          = 1'b0;
+  parameter bit SecureIbex               = 1'b0;
 
   ibex_top_tracing #(
     .DmHaltAddr      (32'h`BOOT_ADDR + 'h0 ),
@@ -72,12 +73,14 @@ module core_ibex_tb_top;
     .WritebackStage  (WritebackStage   ),
     .ICache          (ICache           ),
     .ICacheECC       (ICacheECC        ),
+    .SecureIbex      (SecureIbex       ),
     .BranchPredictor (BranchPredictor  )
   ) dut (
     .clk_i          (clk                  ),
     .rst_ni         (rst_n                ),
 
     .test_en_i      (1'b0                 ),
+    .scan_rst_ni    (1'b1                 ),
     .ram_cfg_i      ('b0                  ),
 
     .hart_id_i      (32'b0                ),

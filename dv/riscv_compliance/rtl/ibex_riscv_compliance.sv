@@ -27,6 +27,7 @@ module ibex_riscv_compliance (
   parameter bit ICache                  = 1'b0;
   parameter bit ICacheECC               = 1'b0;
   parameter bit BranchPredictor         = 1'b0;
+  parameter bit SecureIbex              = 1'b0;
 
   logic clk_sys, rst_sys_n;
 
@@ -125,6 +126,7 @@ module ibex_riscv_compliance (
       .ICache          (ICache          ),
       .ICacheECC       (ICacheECC       ),
       .BranchPredictor (BranchPredictor ),
+      .SecureIbex      (SecureIbex      ),
       .DmHaltAddr      (32'h00000000    ),
       .DmExceptionAddr (32'h00000000    )
     ) u_top (
@@ -132,6 +134,7 @@ module ibex_riscv_compliance (
       .rst_ni         (rst_sys_n         ),
 
       .test_en_i      ('b0               ),
+      .scan_rst_ni    (1'b1              ),
       .ram_cfg_i      ('b0               ),
 
       .hart_id_i      (32'b0             ),
