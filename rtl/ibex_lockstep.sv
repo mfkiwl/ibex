@@ -86,6 +86,7 @@ module ibex_lockstep import ibex_pkg::*; #(
     input  logic                         debug_req_i,
     input  crash_dump_t                  crash_dump_i,
 
+    input  logic                         fetch_enable_i,
     output logic                         alert_minor_o,
     output logic                         alert_major_o,
     input  logic                         core_busy_i,
@@ -143,6 +144,7 @@ module ibex_lockstep import ibex_pkg::*; #(
     logic [14:0]                 irq_fast;
     logic                        irq_nm;
     logic                        debug_req;
+    logic                        fetch_enable;
   } delayed_inputs_t;
 
   delayed_inputs_t [LockstepOffset-1:0] shadow_inputs_q;
@@ -168,17 +170,26 @@ module ibex_lockstep import ibex_pkg::*; #(
   assign shadow_inputs_in.irq_fast       = irq_fast_i;
   assign shadow_inputs_in.irq_nm         = irq_nm_i;
   assign shadow_inputs_in.debug_req      = debug_req_i;
+  assign shadow_inputs_in.fetch_enable   = fetch_enable_i;
 
   // Delay the inputs
-  always_ff @(posedge clk_i) begin
-    for (int unsigned i = 0; i < LockstepOffset-1; i++) begin
-      shadow_inputs_q[i]     <= shadow_inputs_q[i+1];
-      shadow_tag_rdata_q[i]  <= shadow_tag_rdata_q[i+1];
-      shadow_data_rdata_q[i] <= shadow_data_rdata_q[i+1];
+  always_ff @(posedge clk_i or negedge rst_ni) begin
+    if (!rst_ni) begin
+      for (int unsigned i = 0; i < LockstepOffset; i++) begin
+        shadow_inputs_q[i]     <= delayed_inputs_t'('0);
+        shadow_tag_rdata_q[i]  <= '{default:0};
+        shadow_data_rdata_q[i] <= '{default:0};
+      end
+    end else begin
+      for (int unsigned i = 0; i < LockstepOffset-1; i++) begin
+        shadow_inputs_q[i]     <= shadow_inputs_q[i+1];
+        shadow_tag_rdata_q[i]  <= shadow_tag_rdata_q[i+1];
+        shadow_data_rdata_q[i] <= shadow_data_rdata_q[i+1];
+      end
+      shadow_inputs_q[LockstepOffset-1]     <= shadow_inputs_in;
+      shadow_tag_rdata_q[LockstepOffset-1]  <= ic_tag_rdata_i;
+      shadow_data_rdata_q[LockstepOffset-1] <= ic_data_rdata_i;
     end
-    shadow_inputs_q[LockstepOffset-1]     <= shadow_inputs_in;
-    shadow_tag_rdata_q[LockstepOffset-1]  <= ic_tag_rdata_i;
-    shadow_data_rdata_q[LockstepOffset-1] <= ic_data_rdata_i;
   end
 
   ///////////////////
@@ -360,6 +371,7 @@ module ibex_lockstep import ibex_pkg::*; #(
     .rvfi_mem_wdata    (),
 `endif
 
+    .fetch_enable_i    (shadow_inputs_q[0].fetch_enable),
     .alert_minor_o     (shadow_alert_minor),
     .alert_major_o     (shadow_alert_major),
     .core_busy_o       (shadow_outputs.core_busy)
