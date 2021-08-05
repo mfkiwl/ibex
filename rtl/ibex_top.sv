@@ -115,6 +115,7 @@ module ibex_top #(
   import ibex_pkg::*;
 
   localparam bit          Lockstep          = SecureIbex;
+  localparam bit          ResetAll          = Lockstep;
   localparam bit          DummyInstructions = SecureIbex;
   localparam bit          RegFileECC        = SecureIbex;
   localparam int unsigned RegFileDataWidth  = RegFileECC ? 32 + 7 : 32;
@@ -197,6 +198,7 @@ module ibex_top #(
     .DbgTriggerEn      ( DbgTriggerEn      ),
     .DbgHwBreakNum     ( DbgHwBreakNum     ),
     .WritebackStage    ( WritebackStage    ),
+    .ResetAll          ( ResetAll          ),
     .SecureIbex        ( SecureIbex        ),
     .DummyInstructions ( DummyInstructions ),
     .RegFileECC        ( RegFileECC        ),
@@ -607,28 +609,22 @@ module ibex_top #(
     } = buf_out;
 
     // Manually buffer all input signals.
-    for (genvar k = 0; k < NumBufferBits; k++) begin : gen_buffers
-      prim_buf u_prim_buf (
-        .in_i(buf_in[k]),
-        .out_o(buf_out[k])
-      );
-    end
+    prim_buf #(.Width(NumBufferBits)) u_signals_prim_buf (
+      .in_i(buf_in),
+      .out_o(buf_out)
+    );
 
     logic [TagSizeECC-1:0]  ic_tag_rdata_local [IC_NUM_WAYS];
     logic [LineSizeECC-1:0] ic_data_rdata_local [IC_NUM_WAYS];
     for (genvar k = 0; k < IC_NUM_WAYS; k++) begin : gen_ways
-      for (genvar j = 0; j < TagSizeECC; j++) begin : gen_tag_bufs
-        prim_buf u_prim_buf (
-          .in_i(ic_tag_rdata[k][j]),
-          .out_o(ic_tag_rdata_local[k][j])
-        );
-      end
-      for (genvar j = 0; j < LineSizeECC; j++) begin : gen_data_bufs
-        prim_buf u_prim_buf (
-          .in_i(ic_data_rdata[k][j]),
-          .out_o(ic_data_rdata_local[k][j])
-        );
-      end
+      prim_buf #(.Width(TagSizeECC)) u_tag_prim_buf (
+        .in_i(ic_tag_rdata[k]),
+        .out_o(ic_tag_rdata_local[k])
+      );
+      prim_buf #(.Width(LineSizeECC)) u_data_prim_buf (
+        .in_i(ic_data_rdata[k]),
+        .out_o(ic_data_rdata_local[k])
+      );
     end
 
     logic lockstep_alert_minor_local, lockstep_alert_major_local;
@@ -651,6 +647,7 @@ module ibex_top #(
       .DbgTriggerEn      ( DbgTriggerEn      ),
       .DbgHwBreakNum     ( DbgHwBreakNum     ),
       .WritebackStage    ( WritebackStage    ),
+      .ResetAll          ( ResetAll          ),
       .SecureIbex        ( SecureIbex        ),
       .DummyInstructions ( DummyInstructions ),
       .RegFileECC        ( RegFileECC        ),
@@ -737,11 +734,7 @@ module ibex_top #(
     assign unused_scan = scan_rst_ni;
   end
 
-  // TODO - need a config to reset all registers before the lockstep alert can be used
-  logic unused_lockstep_alert_major;
-  assign unused_lockstep_alert_major = lockstep_alert_major;
-
-  assign alert_major_o = core_alert_major;// | lockstep_alert_major;
+  assign alert_major_o = core_alert_major | lockstep_alert_major;
   assign alert_minor_o = core_alert_minor | lockstep_alert_minor;
 
   `ASSERT_KNOWN(IbexAlertMinorX, alert_minor_o)
