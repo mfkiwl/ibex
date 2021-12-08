@@ -4,10 +4,12 @@
 //
 // Register slice conforming to Comportibility guide.
 
-module prim_subreg #(
-  parameter int            DW       = 32  ,
-  parameter                SWACCESS = "RW",  // {RW, RO, WO, W1C, W1S, W0C, RC}
-  parameter logic [DW-1:0] RESVAL   = '0     // Reset value
+module prim_subreg
+  import prim_subreg_pkg::*;
+#(
+  parameter int            DW       = 32,
+  parameter sw_access_e    SwAccess = SwAccessRW,
+  parameter logic [DW-1:0] RESVAL   = '0    // reset value
 ) (
   input clk_i,
   input rst_ni,
@@ -32,7 +34,7 @@ module prim_subreg #(
 
   prim_subreg_arb #(
     .DW       ( DW       ),
-    .SWACCESS ( SWACCESS )
+    .SwAccess ( SwAccess )
   ) wr_en_data_arb (
     .we,
     .wd,
@@ -51,14 +53,30 @@ module prim_subreg #(
     end
   end
 
+  logic wr_en_buf;
+  prim_buf #(
+    .Width(1)
+  ) u_wr_en_buf (
+    .in_i(wr_en),
+    .out_o(wr_en_buf)
+  );
+
   always_ff @(posedge clk_i or negedge rst_ni) begin
     if (!rst_ni) begin
       q <= RESVAL;
-    end else if (wr_en) begin
+    end else if (wr_en_buf) begin
       q <= wr_data;
     end
   end
 
-  assign qs = q;
+  logic [DW-1:0] q_buf;
+  prim_buf #(
+    .Width(DW)
+  ) u_q_buf (
+    .in_i(q),
+    .out_o(q_buf)
+  );
+
+  assign qs = q_buf;
 
 endmodule

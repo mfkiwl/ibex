@@ -6,12 +6,13 @@
 
 module prim_secded_28_22_bind_fpv;
 
-  bind prim_secded_28_22_fpv
+  bind prim_secded_28_22_tb
     prim_secded_28_22_assert_fpv prim_secded_28_22_assert_fpv (
     .clk_i,
     .rst_ni,
     .data_i,
     .data_o,
+    .encoded_o,
     .syndrome_o,
     .err_o,
     .error_inject_i

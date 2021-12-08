@@ -78,8 +78,10 @@ class dv_base_vseq #(type RAL_T               = dv_base_reg_block,
    * startup, reset and shutdown related tasks
    */
   virtual task dut_init(string reset_kind = "HARD");
-    if (do_apply_reset)         apply_reset(reset_kind);
-    else if (do_wait_for_reset) wait_for_reset(reset_kind);
+    if (do_apply_reset) begin
+      apply_reset(reset_kind);
+      post_apply_reset(reset_kind);
+    end else if (do_wait_for_reset) wait_for_reset(reset_kind);
     // delay after reset for tl agent check seq_item_port empty
     #1ps;
   endtask
@@ -137,6 +139,11 @@ class dv_base_vseq #(type RAL_T               = dv_base_reg_block,
     end
   endtask
 
+  // This is called after apply_reset in this class and after apply_resets_concurrently
+  // in cip_base_vseq::run_seq_with_rand_reset_vseq.
+  virtual task post_apply_reset(string reset_kind = "HARD");
+  endtask
+
   virtual task wait_for_reset(string reset_kind     = "HARD",
                               bit wait_for_assert   = 1,
                               bit wait_for_deassert = 1);
@@ -180,13 +187,26 @@ class dv_base_vseq #(type RAL_T               = dv_base_reg_block,
   // arg csr_test_type: what csr test to run {hw_reset, rw, bit_bash, aliasing}
   // arg num_test_csrs:instead of testing the entire ral model or passing test chunk info via
   // plusarg, provide ability to set a random number of csrs to test from higher level sequence
-  virtual task run_csr_vseq(string          csr_test_type = "",
-                            int             num_test_csrs = 0,
-                            bit             do_rand_wr_and_reset = 1);
-    csr_base_seq  m_csr_seq;
+  virtual task run_csr_vseq(string csr_test_type = "",
+                            int    num_test_csrs = 0,
+                            bit    do_rand_wr_and_reset = 1,
+                            string ral_name = "");
+    csr_base_seq      m_csr_seq;
+    dv_base_reg_block models[string];
 
-    // env needs to have a ral instance
+    // env needs to have at least one ral instance
     `DV_CHECK_GE_FATAL(cfg.ral_models.size(), 1)
+
+    // If ral_name is specified, only use registers on that named interface. Otherwise, use all
+    // registers.
+    if (ral_name != "") begin
+      `DV_CHECK_FATAL(cfg.ral_models.exists(ral_name))
+      models[ral_name] = cfg.ral_models[ral_name];
+    end else begin
+      foreach (cfg.ral_models[i]) begin
+        models[i] = cfg.ral_models[i];
+      end
+    end
 
     // check which csr test type
     case (csr_test_type)
@@ -197,6 +217,12 @@ class dv_base_vseq #(type RAL_T               = dv_base_reg_block,
       "mem_walk": csr_base_seq::type_id::set_type_override(csr_mem_walk_seq::get_type());
       default   : `uvm_fatal(`gfn, $sformatf("specified opt is invalid: +csr_%0s", csr_test_type))
     endcase
+
+    // Print the list of available exclusions that are in effect for debug.
+    foreach (models[i]) begin
+      csr_excl_item csr_excl = csr_utils_pkg::get_excl_item(models[i]);
+      if (csr_excl != null) csr_excl.print_exclusions();
+    end
 
     // if hw_reset test, then write all CSRs first and reset the whole dut
     if (csr_test_type == "hw_reset" && do_rand_wr_and_reset) begin
@@ -214,8 +240,8 @@ class dv_base_vseq #(type RAL_T               = dv_base_reg_block,
       m_csr_write_seq = csr_write_seq::type_id::create("m_csr_write_seq");
       // We have to assign this array in a loop because the element types aren't equivalent, so
       // the array types aren't assignment compatible.
-      foreach (cfg.ral_models[i]) begin
-        m_csr_write_seq.models[i] = cfg.ral_models[i];
+      foreach (models[i]) begin
+        m_csr_write_seq.models[i] = models[i];
       end
       m_csr_write_seq.external_checker = cfg.en_scb;
       m_csr_write_seq.en_rand_backdoor_write = 1'b1;
@@ -235,8 +261,8 @@ class dv_base_vseq #(type RAL_T               = dv_base_reg_block,
     m_csr_seq = csr_base_seq::type_id::create("m_csr_seq");
     // We have to assign this array in a loop because the element types aren't equivalent, so
     // the array types aren't assignment compatible.
-    foreach (cfg.ral_models[i])  begin
-      m_csr_seq.models[i] = cfg.ral_models[i];
+    foreach (models[i])  begin
+      m_csr_seq.models[i] = models[i];
     end
     m_csr_seq.external_checker = cfg.en_scb;
     m_csr_seq.num_test_csrs = num_test_csrs;

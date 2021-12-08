@@ -216,14 +216,14 @@ module ibex_lockstep import ibex_pkg::*; #(
   logic [31:0] unused_wdata;
 
   // Checks on incoming data
-  prim_secded_39_32_dec u_instr_intg_dec (
+  prim_secded_inv_39_32_dec u_instr_intg_dec (
     .data_i     ({instr_rdata_intg_q, shadow_inputs_q[LockstepOffset-1].instr_rdata}),
     .data_o     (),
     .syndrome_o (),
     .err_o      (instr_intg_err)
   );
 
-  prim_secded_39_32_dec u_data_intg_dec (
+  prim_secded_inv_39_32_dec u_data_intg_dec (
     .data_i     ({data_rdata_intg_q, shadow_inputs_q[LockstepOffset-1].data_rdata}),
     .data_o     (),
     .syndrome_o (),
@@ -234,7 +234,7 @@ module ibex_lockstep import ibex_pkg::*; #(
                         (shadow_inputs_q[LockstepOffset-1].data_rvalid  & |data_intg_err);
 
   // Generate integrity bits
-  prim_secded_39_32_enc u_data_gen (
+  prim_secded_inv_39_32_enc u_data_gen (
     .data_i (data_wdata_i),
     .data_o ({data_wdata_intg_o, unused_wdata})
   );
@@ -397,29 +397,33 @@ module ibex_lockstep import ibex_pkg::*; #(
     .crash_dump_o      (shadow_outputs_d.crash_dump),
 
 `ifdef RVFI
-    .rvfi_valid        (),
-    .rvfi_order        (),
-    .rvfi_insn         (),
-    .rvfi_trap         (),
-    .rvfi_halt         (),
-    .rvfi_intr         (),
-    .rvfi_mode         (),
-    .rvfi_ixl          (),
-    .rvfi_rs1_addr     (),
-    .rvfi_rs2_addr     (),
-    .rvfi_rs3_addr     (),
-    .rvfi_rs1_rdata    (),
-    .rvfi_rs2_rdata    (),
-    .rvfi_rs3_rdata    (),
-    .rvfi_rd_addr      (),
-    .rvfi_rd_wdata     (),
-    .rvfi_pc_rdata     (),
-    .rvfi_pc_wdata     (),
-    .rvfi_mem_addr     (),
-    .rvfi_mem_rmask    (),
-    .rvfi_mem_wmask    (),
-    .rvfi_mem_rdata    (),
-    .rvfi_mem_wdata    (),
+    .rvfi_valid         (),
+    .rvfi_order         (),
+    .rvfi_insn          (),
+    .rvfi_trap          (),
+    .rvfi_halt          (),
+    .rvfi_intr          (),
+    .rvfi_mode          (),
+    .rvfi_ixl           (),
+    .rvfi_rs1_addr      (),
+    .rvfi_rs2_addr      (),
+    .rvfi_rs3_addr      (),
+    .rvfi_rs1_rdata     (),
+    .rvfi_rs2_rdata     (),
+    .rvfi_rs3_rdata     (),
+    .rvfi_rd_addr       (),
+    .rvfi_rd_wdata      (),
+    .rvfi_pc_rdata      (),
+    .rvfi_pc_wdata      (),
+    .rvfi_mem_addr      (),
+    .rvfi_mem_rmask     (),
+    .rvfi_mem_wmask     (),
+    .rvfi_mem_rdata     (),
+    .rvfi_mem_wdata     (),
+    .rvfi_ext_mip       (),
+    .rvfi_ext_nmi       (),
+    .rvfi_ext_debug_req (),
+    .rvfi_ext_mcycle    (),
 `endif
 
     .fetch_enable_i    (shadow_inputs_q[0].fetch_enable),

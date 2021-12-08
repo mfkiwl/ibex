@@ -4,6 +4,17 @@
 
 GEN_DIR             := $(realpath ../../../vendor/google_riscv-dv)
 TOOLCHAIN           := ${RISCV_TOOLCHAIN}
+export IBEX_ROOT	  := $(realpath ../../../)
+
+ifeq ($(COSIM),1)
+ifndef IBEX_COSIM_ISS_ROOT
+$(error IBEX_COSIM_ISS_ROOT must be set to the root of a suitable spike build if COSIM=1)
+else
+# Spike builds a libsoftfloat.so shared library that the simulator binary needs.
+# Set LD_LIBRARY_PATH so it can be found.
+export LD_LIBRARY_PATH := $(IBEX_COSIM_ISS_ROOT)/lib/:${LD_LIBRARY_PATH}
+endif
+endif
 
 # Explicitly ask for the bash shell
 SHELL                := bash
@@ -40,7 +51,14 @@ ISS                 := spike
 # ISS runtime options
 ISS_OPTS            :=
 # ISA
-ISA                 := rv32imcb
+# Both an updated compiler and ISS are required to verify the bitmanip v.1.00
+# and draft v.0.93 extensions. For now, disable the bitmanip tests and verify
+# RV32IMC only.
+# For details, refer to https://github.com/lowRISC/ibex/issues/1470
+#ISA                 := rv32imcb
+#ISA_ISS             := rv32imc_Zba_Zbb_Zbc_Zbs_Xbitmanip
+ISA                 := rv32imc
+ISA_ISS             := rv32imc
 # Test name (default: full regression)
 TEST                := all
 TESTLIST            := riscv_dv_extension/testlist.yaml
@@ -114,7 +132,6 @@ CSR_OPTS=--csr_yaml=${CSR_FILE} \
          --end_signature_addr=${SIGNATURE_ADDR}
 
 RISCV_DV_OPTS=--custom_target=riscv_dv_extension \
-              --isa="${ISA}" \
               --mabi=ilp32 \
 
 # To avoid cluttering the output directory with stamp files, we place them in
@@ -233,7 +250,7 @@ tests-and-seeds := \
 #
 # To do this variable tracking, we dump each of the variables to a Makefile
 # fragment and try to load it up the next time around.
-gen-var-deps := GEN_OPTS SIMULATOR RISCV_DV_OPTS CSR_OPTS \
+gen-var-deps := GEN_OPTS SIMULATOR RISCV_DV_OPTS ISA CSR_OPTS \
 	            SIGNATURE_ADDR PMP_REGIONS PMP_GRANULARITY TEST_OPTS
 
 # Load up the generation stage's saved variable values. If this fails, that's
@@ -270,6 +287,7 @@ $(metadata)/instr_gen.gen.stamp: \
      --lsf_cmd="${LSF_CMD}" \
      --simulator="${SIMULATOR}" \
      ${RISCV_DV_OPTS} \
+     --isa=${ISA} \
      ${TEST_OPTS} \
      ${CSR_OPTS} \
      --sim_opts="+uvm_set_inst_override=riscv_asm_program_gen,ibex_asm_program_gen,"uvm_test_top.asm_gen" \
@@ -293,7 +311,8 @@ $(metadata)/instr_gen.compile.stamp: \
      --steps=gcc_compile \
      ${TEST_OPTS} \
      --gcc_opts=-mno-strict-align \
-     ${RISCV_DV_OPTS} && \
+     ${RISCV_DV_OPTS} \
+     --isa=${ISA} && \
 	  touch $@
 
 .PHONY: gcc_compile
@@ -318,7 +337,7 @@ $(metadata)/instr_gen.iss.stamp: \
      ${TEST_OPTS} \
      --iss="${ISS}" \
      --iss_opts="${ISS_OPTS}" \
-     --isa="${ISA}" \
+     --isa="${ISA_ISS}" \
      ${RISCV_DV_OPTS}
 	$(call dump-vars,$(metadata)/iss-vars.mk,iss,$(iss-var-deps))
 	@touch $@
@@ -349,7 +368,7 @@ all-verilog = \
   $(shell find ../../../rtl -name '*.v' -o -name '*.sv' -o -name '*.svh') \
   $(shell find ../.. -name '*.v' -o -name '*.sv' -o -name '*.svh')
 
-compile-var-deps := COMMON_OPTS SIMULATOR COV WAVES COMPILE_OPTS
+compile-var-deps := COMMON_OPTS SIMULATOR COV WAVES COMPILE_OPTS COSIM
 -include $(OUT-DIR)rtl_sim/.compile-vars.mk
 compile-vars-prereq = $(call vars-prereq,comp,compiling TB,$(compile-var-deps))
 
@@ -357,6 +376,7 @@ $(call dump-vars-match,$(compile-var-deps),comp)
 
 cov-arg := $(if $(call equal,$(COV),1),--en_cov,)
 wave-arg := $(if $(call equal,$(WAVES),1),--en_wave,)
+cosim-arg := $(if $(call equal,$(COSIM),1),--en_cosim,)
 lsf-arg := $(if $(LSF_CMD),--lsf_cmd="$(LSF_CMD)",)
 
 $(OUT-DIR)rtl_sim/.compile.stamp: \
@@ -368,7 +388,7 @@ $(OUT-DIR)rtl_sim/.compile.stamp: \
 	 --steps=compile \
 	 ${COMMON_OPTS} \
 	 --simulator="${SIMULATOR}" --simulator_yaml=yaml/rtl_simulation.yaml \
-	 $(cov-arg) $(wave-arg) $(lsf-arg) \
+	 $(cov-arg) $(wave-arg) $(cosim-arg) $(lsf-arg) \
 	 --cmp_opts="${COMPILE_OPTS}"
 	$(call dump-vars,$(OUT-DIR)rtl_sim/.compile-vars.mk,comp,$(compile-var-deps))
 	@touch $@

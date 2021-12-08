@@ -43,8 +43,15 @@ class dv_base_env_cfg #(type RAL_T = dv_base_reg_block) extends uvm_object;
   // clk_rst_vif and clk_freq_mhz can be found from the associative arrays
   virtual clk_rst_if  clk_rst_vif;
   virtual clk_rst_if  clk_rst_vifs[string];
-  rand clk_freq_mhz_e clk_freq_mhz;
-  rand clk_freq_mhz_e clk_freqs_mhz[string];
+  rand uint clk_freq_mhz;
+  rand uint clk_freqs_mhz[string];
+
+  constraint clk_freq_mhz_c {
+    `DV_COMMON_CLK_CONSTRAINT(clk_freq_mhz)
+    foreach (clk_freqs_mhz[i]) {
+      `DV_COMMON_CLK_CONSTRAINT(clk_freqs_mhz[i])
+    }
+  }
 
   `uvm_object_param_utils_begin(dv_base_env_cfg #(RAL_T))
     `uvm_field_int   (is_active,   UVM_DEFAULT)
@@ -74,14 +81,22 @@ class dv_base_env_cfg #(type RAL_T = dv_base_reg_block) extends uvm_object;
 
     // add items to clk_freqs_mhz before randomizing it
     foreach (ral_model_names[i]) begin
-      clk_freqs_mhz[ral_model_names[i]] = ClkFreq24Mhz;
+      clk_freqs_mhz[ral_model_names[i]] = 0;
     end
   endfunction
 
-  // ral flow is limited in terms of setting correct field access policies and reset values
-  // We apply those fixes here - please note these fixes need to be reflected in the scoreboard
-  protected virtual function void apply_ral_fixes();
-    // fix access policies & reset values
+  // Set pre-build RAL knobs.
+  //
+  // This method enables setting pre-build config knobs that can be used to control how the RAL
+  // sub-structures are created.
+  protected virtual function void pre_build_ral_settings(dv_base_reg_block ral);
+  endfunction
+
+  // Perform post-build, pre-lock modifications to the RAL.
+  //
+  // For some registers / fields, the correct access policies or reset values may not be set. Fixes
+  // like those can be made with this method.
+  protected virtual function void post_build_ral_settings(dv_base_reg_block ral);
   endfunction
 
   virtual function void reset_asserted();
@@ -105,8 +120,9 @@ class dv_base_env_cfg #(type RAL_T = dv_base_reg_block) extends uvm_object;
 
       // Build the register block with an arbitrary base address (we choose 0). We'll change it
       // later.
+      pre_build_ral_settings(reg_blk);
       reg_blk.build(.base_addr(0), .csr_excl(null));
-      apply_ral_fixes();
+      post_build_ral_settings(reg_blk);
       reg_blk.lock_model();
 
       // Now the model is locked, we know its layout. Set the base address for the register block.

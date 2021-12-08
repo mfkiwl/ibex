@@ -7,6 +7,7 @@ package csr_utils_pkg;
   import uvm_pkg::*;
   import dv_utils_pkg::*;
   import dv_base_reg_pkg::*;
+  export dv_base_reg_pkg::csr_field_t, dv_base_reg_pkg::decode_csr_or_field;
 
   // macro includes
   `include "uvm_macros.svh"
@@ -21,14 +22,6 @@ package csr_utils_pkg;
   uvm_check_e default_csr_check           = UVM_CHECK;
   bit         under_reset                 = 0;
   int         max_outstanding_accesses    = 100;
-
-  // csr field struct - hold field specific params
-  typedef struct {
-    uvm_reg         csr;
-    uvm_reg_field   field;
-    uvm_reg_data_t  mask;
-    uint            shift;
-  } csr_field_t;
 
   function automatic void increment_outstanding_access();
     outstanding_accesses++;
@@ -75,7 +68,7 @@ package csr_utils_pkg;
     return mem.get_access();
   endfunction
 
-  // This fucntion return mirrored value of reg/field of given RAL
+  // This function return mirrored value of reg/field of given RAL
   function automatic uvm_reg_data_t get_reg_fld_mirror_value(uvm_reg_block ral,
                                                              string        reg_name,
                                                              string        field_name  = "");
@@ -97,42 +90,6 @@ package csr_utils_pkg;
     return result;
   endfunction : get_reg_fld_mirror_value
 
-  // This function attempts to cast a given uvm_object ptr into uvm_reg or uvm_reg_field. If cast
-  // is successful on either, then set the appropriate csr_field_t return values.
-  function automatic csr_field_t decode_csr_or_field(input uvm_object ptr);
-    uvm_reg       csr;
-    uvm_reg_field fld;
-    csr_field_t   result;
-    string        msg_id = {csr_utils_pkg::msg_id, "::decode_csr_or_field"};
-
-    if ($cast(csr, ptr)) begin
-      // return csr object with null field; set the mask to all 1s and shift to 0
-      result.csr = csr;
-      result.mask = '1;
-      result.shift = 0;
-    end
-    else if ($cast(fld, ptr)) begin
-      // return csr field object; return the appropriate mask and shift values
-      result.csr = fld.get_parent();
-      result.field = fld;
-      result.mask = (1 << fld.get_n_bits()) - 1;
-      result.shift = fld.get_lsb_pos();
-    end
-    else begin
-      `uvm_fatal(msg_id, $sformatf("ptr %0s is not of type uvm_reg or uvm_reg_field",
-                                   ptr.get_full_name()))
-    end
-    return result;
-  endfunction : decode_csr_or_field
-
-  // mask and shift data to extract the value specific to that supplied field
-  function automatic uvm_reg_data_t get_field_val(uvm_reg_field   field,
-                                                  uvm_reg_data_t  value);
-    uvm_reg_data_t  mask = (1 << field.get_n_bits()) - 1;
-    uint            shift = field.get_lsb_pos();
-    get_field_val = (value >> shift) & mask;
-  endfunction
-
   // get updated reg value by using new specific field value
   function automatic uvm_reg_data_t get_csr_val_with_updated_field(uvm_reg_field   field,
                                                                    uvm_reg_data_t  csr_value,
@@ -152,6 +109,8 @@ package csr_utils_pkg;
                                 csr.get_full_name(), csr.m_is_busy), UVM_HIGH)
   endtask
 
+  // Use `csr_wr` to construct `csr_update` to avoid replicated codes to handle nonblocking,
+  // shadow writes etc
   task automatic csr_update(input  uvm_reg      csr,
                             input  uvm_check_e  check = default_csr_check,
                             input  uvm_path_e   path = UVM_DEFAULT_PATH,
@@ -159,53 +118,21 @@ package csr_utils_pkg;
                             input  uint         timeout_ns = default_timeout_ns,
                             input  uvm_reg_map  map = null,
                             input  bit          en_shadow_wr = 1);
-    if (blocking) begin
-      csr_update_sub(csr, check, path, timeout_ns, map, en_shadow_wr);
-    end else begin
-      fork
-        csr_update_sub(csr, check, path, timeout_ns, map, en_shadow_wr);
-      join_none
-      // Add #0 to ensure that this thread starts executing before any subsequent call
-      #0;
+    uvm_reg_field fields[$];
+    uvm_reg_data_t value;
+
+    // below is partial replication of the uvm_reg_field::update() logic in UVM1.2 source code
+    if (!csr.needs_update()) return;
+    csr.get_fields(fields);
+    // Concatenate the write-to-update values from each field
+    // Fields are stored in LSB or MSB order
+    value = 0;
+    foreach (fields[i]) begin
+      value |= fields[i].XupdateX() << fields[i].get_lsb_pos();
     end
-  endtask
 
-  // subroutine of csr_update, don't use it directly
-  task automatic csr_update_sub(input  uvm_reg      csr,
-                                input  uvm_check_e  check = default_csr_check,
-                                input  uvm_path_e   path = UVM_DEFAULT_PATH,
-                                input  uint         timeout_ns = default_timeout_ns,
-                                input  uvm_reg_map  map = null,
-                                input  bit          en_shadow_wr = 1);
-    fork
-      begin : isolation_fork
-        uvm_status_e  status;
-        string        msg_id = {csr_utils_pkg::msg_id, "::csr_update"};
-
-        fork
-          begin
-            increment_outstanding_access();
-            csr_pre_write_sub(csr, en_shadow_wr);
-            csr.update(.status(status), .path(path), .map(map), .prior(100));
-            csr_post_write_sub(csr, en_shadow_wr);
-            // when reset occurs, all items will be dropped immediately. This may end up getting
-            // d_error = 1 from previous item on the bus. Skip checking it during reset
-            if (check == UVM_CHECK && !under_reset) begin
-              `DV_CHECK_EQ(status, UVM_IS_OK,
-                           $sformatf("trying to update csr %0s", csr.get_full_name()),
-                           error, msg_id)
-            end
-            decrement_outstanding_access();
-          end
-          begin
-            wait_timeout(timeout_ns, msg_id,
-                         $sformatf("Timeout waiting to csr_update %0s (addr=0x%0h)",
-                                   csr.get_full_name(), csr.get_address()));
-          end
-        join_any
-        disable fork;
-      end : isolation_fork
-    join
+    csr_wr(.ptr(csr), .value(value), .check(check), .path(path), .blocking(blocking), .backdoor(0),
+           .timeout_ns(timeout_ns), .predict(0), .map(map), .en_shadow_wr(en_shadow_wr));
   endtask
 
   task automatic csr_wr(input uvm_object     ptr,
@@ -254,25 +181,24 @@ package csr_utils_pkg;
                             input bit            en_shadow_wr = 1);
     fork
       begin : isolation_fork
-        uvm_status_e  status;
         string        msg_id = {csr_utils_pkg::msg_id, "::csr_wr"};
 
         fork
           begin
+            dv_base_reg dv_reg;
+            `downcast(dv_reg, csr, "", fatal, msg_id)
+
             increment_outstanding_access();
             csr_pre_write_sub(csr, en_shadow_wr);
-            csr.write(.status(status), .value(value), .path(path), .map(map), .prior(100));
+
+            csr_wr_and_predict_sub(.csr(csr), .value(value), .check(check), .path(path),
+                                   .predict(predict), .map(map));
+            if (en_shadow_wr && dv_reg.get_is_shadowed()) begin
+              csr_wr_and_predict_sub(.csr(csr), .value(value), .check(check), .path(path),
+                                     .predict(predict), .map(map));
+            end
+
             csr_post_write_sub(csr, en_shadow_wr);
-            if (check == UVM_CHECK && !under_reset) begin
-              `DV_CHECK_EQ(status, UVM_IS_OK,
-                           $sformatf("trying to write csr %0s", csr.get_full_name()),
-                           error, msg_id)
-            end
-            // Only update the predicted value if status is ok (otherwise the write isn't completed
-            // successfully and the design shouldn't have accepted the written value)
-            if (status == UVM_IS_OK && predict) begin
-              void'(csr.predict(.value(value), .kind(UVM_PREDICT_WRITE)));
-            end
             decrement_outstanding_access();
           end
           begin
@@ -286,27 +212,42 @@ package csr_utils_pkg;
     join
   endtask
 
-  task automatic csr_pre_write_sub(ref uvm_reg csr, bit en_shadow_wr);
-    dv_base_reg dv_reg;
-    `downcast(dv_reg, csr, "", fatal, msg_id)
-    if (dv_reg.get_is_shadowed()) begin
-      if (en_shadow_wr) increment_outstanding_access();
-      dv_reg.atomic_en_shadow_wr.get(1);
-      dv_reg.set_en_shadow_wr(en_shadow_wr);
+  // internal task, don't use it directly
+  task automatic csr_wr_and_predict_sub(uvm_reg        csr,
+                                        uvm_reg_data_t value,
+                                        uvm_check_e    check,
+                                        uvm_path_e     path,
+                                        bit            predict,
+                                        uvm_reg_map    map);
+    uvm_status_e status;
+    csr.write(.status(status), .value(value), .path(path), .map(map), .prior(100));
+
+    if (under_reset) return;
+    if (check == UVM_CHECK) begin
+      `DV_CHECK_EQ(status, UVM_IS_OK,
+                   $sformatf("trying to write csr %0s", csr.get_full_name()),
+                   error, msg_id)
+    end
+    // Only update the predicted value if status is ok (otherwise the write isn't completed
+    // successfully and the design shouldn't have accepted the written value)
+    if (status == UVM_IS_OK && predict) begin
+      void'(csr.predict(.value(value), .kind(UVM_PREDICT_WRITE)));
     end
   endtask
 
-  task automatic csr_post_write_sub(ref uvm_reg csr, bit en_shadow_wr);
+  task automatic csr_pre_write_sub(uvm_reg csr, bit en_shadow_wr);
     dv_base_reg dv_reg;
     `downcast(dv_reg, csr, "", fatal, msg_id)
-    if (dv_reg.get_is_shadowed()) begin
-      // try setting en_shadow_wr back to default value 1, this function will only work if the
-      // shadow reg finished both writes
-      dv_reg.set_en_shadow_wr(1);
+    if (dv_reg.get_is_shadowed() && en_shadow_wr) begin
+      dv_reg.atomic_en_shadow_wr.get(1);
+    end
+  endtask
+
+  task automatic csr_post_write_sub(uvm_reg csr, bit en_shadow_wr);
+    dv_base_reg dv_reg;
+    `downcast(dv_reg, csr, "", fatal, msg_id)
+    if (dv_reg.get_is_shadowed() && en_shadow_wr) begin
       dv_reg.atomic_en_shadow_wr.put(1);
-      if (en_shadow_wr) begin
-        decrement_outstanding_access();
-      end
     end
   endtask
 
@@ -726,20 +667,105 @@ package csr_utils_pkg;
     end
   endfunction
 
+  // Returns the write data value masked with excluded fields.
+  //
+  // Some fields in the CSR may be excluded from writes. In that case, we need to revert those
+  // fields to their mirrored values and write the rest of the fields with the given value.
+  function automatic uvm_reg_data_t get_csr_wdata_with_write_excl(
+      uvm_reg         csr,
+      uvm_reg_data_t  wdata,
+      csr_test_type_e csr_test_type,
+      csr_excl_item   m_csr_excl_item = get_excl_item(csr)
+  );
+    uvm_reg_field flds[$];
+    csr.get_fields(flds);
+
+    foreach (flds[i]) begin
+      if (m_csr_excl_item.is_excl(flds[i], CsrExclWrite, csr_test_type)) begin
+        `uvm_info(msg_id, $sformatf(
+                  "Retain mirrored value 0x%0h for field %0s due to CsrExclWrite exclusion",
+                  `gmv(flds[i]), flds[i].get_full_name()), UVM_MEDIUM)
+        wdata = get_csr_val_with_updated_field(flds[i], wdata, `gmv(flds[i]));
+      end
+    end
+    return wdata;
+  endfunction
+
+  // Returns the CSR exclusion item associated with the provided object.
+  //
+  // If an exclusion item for the immediate block (parent of the CSR if ptr is a CSR or a field) is
+  // not found, it recurses through the block's ancestors to find an available exclusion item.
+  // arg ptr: An extention of one of dv_base_reg{, _block or _field} classes.
   function automatic csr_excl_item get_excl_item(uvm_object ptr);
-    csr_field_t       csr_or_fld;
     dv_base_reg_block blk;
 
-    csr_or_fld = decode_csr_or_field(ptr);
-    `downcast(blk, csr_or_fld.csr.get_parent(), , , msg_id)
-
-    // csr_excl is at the highest level of reg block
-    while (blk.csr_excl == null) begin
-      `downcast(blk, blk.get_parent(), , , msg_id)
-      `DV_CHECK_NE_FATAL(blk, null, "", msg_id)
+    // Attempt cast to blk. If it fails, then attempt to cast to CSR or field.
+    if (!$cast(blk, ptr)) begin
+      csr_field_t csr_or_fld = decode_csr_or_field(ptr);
+      `downcast(blk, csr_or_fld.csr.get_parent(), , , msg_id)
     end
-    return blk.csr_excl;
+
+    // Recurse through block's ancestors.
+    do begin
+      csr_excl_item csr_excl = blk.get_excl_item();
+      if (csr_excl != null) return csr_excl;
+      `downcast(blk, blk.get_parent(), , , msg_id)
+    end while (blk != null);
+    return null;
   endfunction
+
+  // Clone a UVM address map
+  function automatic uvm_reg_map clone_reg_map(
+      string name, uvm_reg_map map, uvm_reg_addr_t base_addr = 0, int n_bytes = 4,
+      uvm_endianness_e endian = UVM_LITTLE_ENDIAN, bit byte_addressing = 1);
+    uvm_reg_map clone;
+    uvm_reg_map submaps[$];
+    uvm_reg regs[$];
+    uvm_reg_block blk;
+    uvm_mem mems[$];
+
+    // Clone the map
+    blk = map.get_parent();
+    clone = blk.create_map(
+        .name(name),
+        .base_addr(base_addr),
+        .n_bytes(n_bytes),
+        .endian(endian),
+        .byte_addressing(byte_addressing)
+    );
+
+    // Clone the submaps by calling this function recursively
+    map.get_submaps(submaps);
+    if (submaps.size()) `dv_warning("clone_reg_map: submaps are not yet tested", "DV_UTILS_PKG")
+    while (submaps.size()) begin
+      uvm_reg_map submap, submap_clone;
+      submap = submaps.pop_front();
+      submap_clone = clone_reg_map(.name(name), .map(submap), .base_addr(submap.get_base_addr()),
+        .n_bytes(submap.get_n_bytes()), .endian(endian));
+      clone.add_submap(.child_map(submap_clone), .offset(clone.get_submap_offset(submap)));
+    end
+
+    // Clone the registers
+    map.get_registers(regs, UVM_NO_HIER);
+    while (regs.size()) begin
+      uvm_reg rg;
+      rg = regs.pop_front();
+      clone.add_reg(.rg(rg), .offset(rg.get_offset(map)), .rights(rg.get_rights(map)), .unmapped(0),
+                    .frontdoor(null));
+    end
+
+    // Clone the memories
+    map.get_memories(mems, UVM_NO_HIER);
+    while (mems.size()) begin
+      uvm_mem mem;
+      mem = mems.pop_front();
+      clone.add_mem(.mem(mem), .offset(mem.get_offset(0, map)), .rights(mem.get_rights(map)),
+                    .unmapped(0), .frontdoor(null));
+    end
+    return clone;
+
+  endfunction
+
   // sources
   `include "csr_seq_lib.sv"
 

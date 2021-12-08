@@ -76,6 +76,10 @@
   `define DV_STRINGIFY(I_) `"I_`"
 `endif
 
+`ifndef DUT_HIER_STR
+  `define DUT_HIER_STR `DV_STRINGIFY(`DUT_HIER)
+`endif
+
 // Common check macros used by DV_CHECK error and fatal macros.
 // Note: Should not be called by user code
 `ifndef DV_CHECK
@@ -390,7 +394,7 @@
 // SCOPE_ : Hierarchical string path to the testbench where this macro is invoked, example: %m.
 // ID_    : Identifier string used for UVM logs.
 `ifndef DV_ASSERT_CTRL
-`define DV_ASSERT_CTRL(LABEL_, HIER_, LEVELS_ = 0, SCOPE_ = "", ID_ = "%m") \
+`define DV_ASSERT_CTRL(LABEL_, HIER_, LEVELS_ = 0, SCOPE_ = "", ID_ = $sformatf("%m")) \
   initial begin \
     bit assert_en; \
     forever begin \
@@ -405,6 +409,29 @@
         `uvm_info(ID_, $sformatf("Disabling assertions: %0s", `DV_STRINGIFY(HIER_)), UVM_LOW) \
         $assertoff(LEVELS_, HIER_); \
       end \
+    end \
+  end
+`endif
+
+// Retrieves a plusarg value representing an enum literal.
+//
+// The plusarg is parsed as a string, which needs to be converted into the enum literal whose name
+// matches the string. This functionality is provided by the UVM helper function below.
+//
+// ENUM_: The enum type.
+// VAR_: The enum variable to which the plusarg value will be set (must be declared already).
+// PLUSARG_: the name of the plusarg (as raw text). This is typically the same as the enum variable.
+// CHECK_EXISTS_: Throws a fatal error if the plusarg is not set.
+`ifndef DV_GET_ENUM_PLUSARG
+`define DV_GET_ENUM_PLUSARG(ENUM_, VAR_, PLUSARG_ = VAR_, CHECK_EXISTS_ = 0, ID_ = `gfn) \
+  begin \
+    string str; \
+    if ($value$plusargs("``PLUSARG_``=%0s", str)) begin \
+      if (!uvm_enum_wrapper#(ENUM_)::from_name(str, VAR_)) begin \
+        `uvm_fatal(ID_, $sformatf("Cannot find %s from enum ``ENUM_``", VAR_.name())) \
+      end \
+    end else if (CHECK_EXISTS_) begin \
+      `uvm_fatal(ID_, "Please pass the plusarg +``PLUSARG_``=<``ENUM_``-literal>") \
     end \
   end
 `endif
@@ -492,3 +519,18 @@
 `endif
 
 `endif // UVM
+
+// Macros for constrain clk with common frequencies
+// constrain clock to run at 24Mhz - 100Mhz and use higher weights on 24, 25, 48, 50, 100
+`ifndef DV_COMMON_CLK_CONSTRAINT
+`define DV_COMMON_CLK_CONSTRAINT(FREQ_) \
+  FREQ_ dist { \
+    [24:25] :/ 2, \
+    [26:47] :/ 1, \
+    [48:50] :/ 2, \
+    [51:95] :/ 1, \
+    96      :/ 1, \
+    [97:99] :/ 1, \
+    100     :/ 1  \
+  };
+`endif

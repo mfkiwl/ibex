@@ -6,12 +6,13 @@
 
 module prim_secded_hamming_72_64_bind_fpv;
 
-  bind prim_secded_hamming_72_64_fpv
+  bind prim_secded_hamming_72_64_tb
     prim_secded_hamming_72_64_assert_fpv prim_secded_hamming_72_64_assert_fpv (
     .clk_i,
     .rst_ni,
     .data_i,
     .data_o,
+    .encoded_o,
     .syndrome_o,
     .err_o,
     .error_inject_i

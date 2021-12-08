@@ -105,6 +105,10 @@ module ibex_top import ibex_pkg::*; #(
   output logic [ 3:0]                  rvfi_mem_wmask,
   output logic [31:0]                  rvfi_mem_rdata,
   output logic [31:0]                  rvfi_mem_wdata,
+  output logic [31:0]                  rvfi_ext_mip,
+  output logic                         rvfi_ext_nmi,
+  output logic                         rvfi_ext_debug_req,
+  output logic [63:0]                  rvfi_ext_mcycle,
 `endif
 
   // CPU Control Signals
@@ -288,6 +292,10 @@ module ibex_top import ibex_pkg::*; #(
     .rvfi_mem_wmask,
     .rvfi_mem_rdata,
     .rvfi_mem_wdata,
+    .rvfi_ext_mip,
+    .rvfi_ext_nmi,
+    .rvfi_ext_debug_req,
+    .rvfi_ext_mcycle,
 `endif
 
     .fetch_enable_i,
@@ -304,7 +312,8 @@ module ibex_top import ibex_pkg::*; #(
     ibex_register_file_ff #(
       .RV32E            (RV32E),
       .DataWidth        (RegFileDataWidth),
-      .DummyInstructions(DummyInstructions)
+      .DummyInstructions(DummyInstructions),
+      .WordZeroVal      (RegFileDataWidth'(prim_secded_pkg::SecdedInv3932ZeroWord))
     ) register_file_i (
       .clk_i (clk),
       .rst_ni(rst_ni),
@@ -324,7 +333,8 @@ module ibex_top import ibex_pkg::*; #(
     ibex_register_file_fpga #(
       .RV32E            (RV32E),
       .DataWidth        (RegFileDataWidth),
-      .DummyInstructions(DummyInstructions)
+      .DummyInstructions(DummyInstructions),
+      .WordZeroVal      (RegFileDataWidth'(prim_secded_pkg::SecdedInv3932ZeroWord))
     ) register_file_i (
       .clk_i (clk),
       .rst_ni(rst_ni),
@@ -344,7 +354,8 @@ module ibex_top import ibex_pkg::*; #(
     ibex_register_file_latch #(
       .RV32E            (RV32E),
       .DataWidth        (RegFileDataWidth),
-      .DummyInstructions(DummyInstructions)
+      .DummyInstructions(DummyInstructions),
+      .WordZeroVal      (RegFileDataWidth'(prim_secded_pkg::SecdedInv3932ZeroWord))
     ) register_file_i (
       .clk_i (clk),
       .rst_ni(rst_ni),
