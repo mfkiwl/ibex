@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import sys
 from collections import OrderedDict
+from pathlib import Path
 
 from Deploy import CompileSim, CovAnalyze, CovMerge, CovReport, CovUnr, RunTest
 from FlowCfg import FlowCfg
@@ -73,6 +74,7 @@ class SimCfg(FlowCfg):
         self.en_run_modes = []
         self.en_run_modes.extend(args.run_modes)
         self.build_unique = args.build_unique
+        self.build_seed = args.build_seed
         self.build_only = args.build_only
         self.run_only = args.run_only
         self.reseed_ovrd = args.reseed
@@ -96,12 +98,16 @@ class SimCfg(FlowCfg):
             self.en_build_modes.append("gui")
         if args.waves is not None:
             self.en_build_modes.append("waves")
+        else:
+            self.en_build_modes.append("waves_off")
         if self.cov is True:
             self.en_build_modes.append("cov")
         if args.profile is not None:
             self.en_build_modes.append("profile")
         if self.xprop_off is not True:
             self.en_build_modes.append("xprop")
+        if self.build_seed:
+            self.en_build_modes.append("build_seed")
 
         # Options built from cfg_file files
         self.project = ""
@@ -291,7 +297,8 @@ class SimCfg(FlowCfg):
         # Regressions
         # Parse testplan if provided.
         if self.testplan != "":
-            self.testplan = Testplan(self.testplan, repo_top=self.proj_root)
+            self.testplan = Testplan(self.testplan,
+                                     repo_top=Path(self.proj_root))
             # Extract tests in each milestone and add them as regression target.
             self.regressions.extend(self.testplan.get_milestone_regressions())
         else:
@@ -362,7 +369,6 @@ class SimCfg(FlowCfg):
         for item in set(self.items) - items_matched:
             log.warning(f"Item {item} did not match any regressions or "
                         f"tests in {self.flow_cfg_file}.")
-
 
         # Merge the global build and run opts
         Tests.merge_global_opts(self.run_list, self.pre_build_cmds,
@@ -614,6 +620,11 @@ class SimCfg(FlowCfg):
             results_str += f"### [Testplan]({testplan})\n"
 
         results_str += f"### Simulator: {self.tool.upper()}\n"
+
+        # Print the build seed used for clarity.
+        if self.build_seed and not self.run_only:
+            results_str += ("### Build randomization enabled with "
+                            f"--build-seed {self.build_seed}\n")
 
         if not results.table:
             results_str += "No results to display.\n"

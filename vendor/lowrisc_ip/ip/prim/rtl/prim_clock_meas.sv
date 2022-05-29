@@ -65,7 +65,7 @@ module prim_clock_meas #(
     end else if (!ref_en && |ref_cnt) begin
       ref_cnt <= '0;
       ref_valid <= '0;
-    end else if (ref_en && (ref_cnt == RefCnt - 1)) begin
+    end else if (ref_en && (int'(ref_cnt) == RefCnt - 1)) begin
       // restart count and measure
       ref_cnt <= '0;
       ref_valid <= 1'b1;
@@ -149,10 +149,10 @@ module prim_clock_meas #(
 
   // maximum cdc latency from the perspective of the reference clock
   // 1 ref cycle to output request
-  // 2 cycles to sync + 1 cycle to ack is less than 1 cycle of ref based on assertion requirement
+  // 2 cycles to sync + 1 cycle to ack are less than 1 cycle of ref based on assertion requirement
   // 2 ref cycles to sync ack
-  // Double for margin
-  localparam int MaxRefCdcLatency = (1 + 1 + 2)*2;
+  // 2 extra ref cycles for margin
+  localparam int MaxRefCdcLatency = 1 + 1 + 2 + 2;
 
   if (RefTimeOutChkEn) begin : gen_ref_timeout_chk
     // check whether reference clock has timed out

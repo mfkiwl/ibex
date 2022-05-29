@@ -93,6 +93,12 @@ Indicative RAM sizes for common configurations are given in the table below:
 | 4kB, 4 way, 64bit line       | 4 x 128 x 22bit | 4 x 128 x 64bit  |
 +------------------------------+-----------------+------------------+
 
+If ICacheScramble parameter is enabled, all RAM primitives are replaced with scrambling RAM primitive.
+For more information about how scrambling works internally (see :file:`vendor/lowrisc_ip/ip/prim/doc/prim_ram_1p_scr.md`).
+Interface for receiving scrambling key follows req / ack protocol.
+Ibex first requests a new ephemeral key by asserting the request (``scramble_req_o``) and when a fresh valid key is indicated by ``scramble_key_valid_i``, it deasserts the request. 
+Note that in current implementation, it is assumed req/ack protocol is synchronized before arriving to Ibex top level.
+
 Sub Unit Description
 --------------------
 
@@ -158,6 +164,8 @@ The remaining data from hits is buffered in the fill buffer data storage and sup
 
 To deal with misalignment caused by compressed instructions, there is a 16bit skid buffer to store the upper halfword.
 
+.. _icache-ecc:
+
 Cache ECC protection
 ^^^^^^^^^^^^^^^^^^^^
 
@@ -187,6 +195,7 @@ Any error (single or double bit) in any RAM will effectively cancel a cache hit 
 The request which observed an error will fetch it's data from the main instruction memory as normal for a cache miss.
 The cache index and way (or ways) with errors are stored in IC1, and a cache write is forced the next cycle to invalidate that line.
 Lookup requests will be blocked in IC0 while the invalidation write is performed.
+If an ECC error is seen a minor alert will be signaled.
 
 Cache invalidation
 ^^^^^^^^^^^^^^^^^^

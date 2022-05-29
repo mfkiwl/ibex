@@ -39,6 +39,43 @@ class core_ibex_base_test extends uvm_test;
     irq_collected_port  = new("irq_collected_port_test", this);
   endfunction
 
+  // NOTE: This logic should match the code in the get_isas_for_config() function in
+  //       core_ibex/scripts/scripts_lib.py: keep them in sync!
+  function string get_isa_string();
+    bit     RV32E;
+    rv32m_e RV32M;
+    rv32b_e RV32B;
+    string  isa;
+
+    if (!uvm_config_db#(bit)::get(null, "", "RV32E", RV32E)) begin
+      `uvm_fatal(`gfn, "Cannot get RV32E parameter")
+    end
+    if (!uvm_config_db#(rv32m_e)::get(null, "", "RV32M", RV32M)) begin
+      `uvm_fatal(`gfn, "Cannot get RV32M parameter")
+    end
+    if (!uvm_config_db#(rv32b_e)::get(null, "", "RV32B", RV32B)) begin
+      `uvm_fatal(`gfn, "Cannot get RV32B parameter")
+    end
+
+    // Construct the right ISA string for the cosimulator by looking at top-level testbench
+    // parameters.
+    isa = {"rv32", RV32E ? "e" : "i"};
+    if (RV32M != RV32MNone) isa = {isa, "m"};
+    isa = {isa, "c"};
+    case (RV32B)
+      RV32BNone:
+        ;
+      RV32BBalanced:
+        isa = {isa, "_Zba_Zbb_Zbs_XZbf_XZbt"};
+      RV32BOTEarlGrey:
+        isa = {isa, "_Zba_Zbb_Zbc_Zbs_XZbf_XZbp_XZbr_XZbt"};
+      RV32BFull:
+        isa = {isa, "_Zba_Zbb_Zbc_Zbs_XZbe_XZbf_XZbp_XZbr_XZbt"};
+    endcase
+
+    return isa;
+  endfunction
+
   virtual function void build_phase(uvm_phase phase);
     string cosim_log_file;
 
@@ -63,8 +100,10 @@ class core_ibex_base_test extends uvm_test;
 
 `ifdef INC_IBEX_COSIM
     cosim_cfg = core_ibex_cosim_cfg::type_id::create("cosim_cfg", this);
-    cosim_cfg.start_pc = {{32'h`BOOT_ADDR}[31:8], 8'h80};
-    cosim_cfg.start_mtvec = {{32'h`BOOT_ADDR}[31:8], 8'h1};
+
+    cosim_cfg.isa_string = get_isa_string();
+    cosim_cfg.start_pc =    ((32'h`BOOT_ADDR & ~(32'h0000_00FF)) | 8'h80);
+    cosim_cfg.start_mtvec = ((32'h`BOOT_ADDR & ~(32'h0000_00FF)) | 8'h01);
     // TODO: Turn on when not using icache
     cosim_cfg.probe_imem_for_errs = 1'b0;
     void'($value$plusargs("cosim_log_file=%0s", cosim_log_file));
@@ -92,10 +131,10 @@ class core_ibex_base_test extends uvm_test;
     enable_irq_seq = cfg.enable_irq_single_seq || cfg.enable_irq_multiple_seq;
     phase.raise_objection(this);
     cur_run_phase = phase;
-    dut_vif.dut_cb.fetch_enable <= 1'b0;
+    dut_vif.dut_cb.fetch_enable <= ibex_pkg::FetchEnableOff;
     clk_vif.wait_clks(100);
     load_binary_to_mem();
-    dut_vif.dut_cb.fetch_enable <= 1'b1;
+    dut_vif.dut_cb.fetch_enable <= ibex_pkg::FetchEnableOn;
     send_stimulus();
     wait_for_test_done();
     cur_run_phase = null;
@@ -154,7 +193,7 @@ class core_ibex_base_test extends uvm_test;
             check_perf_stats();
             // De-assert fetch enable to finish the test
             clk_vif.wait_clks(10);
-            dut_vif.dut_cb.fetch_enable <= 1'b0;
+            dut_vif.dut_cb.fetch_enable <= ibex_pkg::FetchEnableOff;
           end
           // Wait some time for the remaining instruction to finish
           clk_vif.wait_clks(3000);

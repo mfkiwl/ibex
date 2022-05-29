@@ -23,9 +23,9 @@ module ibex_id_stage #(
   parameter ibex_pkg::rv32b_e RV32B           = ibex_pkg::RV32BNone,
   parameter bit               DataIndTiming   = 1'b0,
   parameter bit               BranchTargetALU = 0,
-  parameter bit               SpecBranch      = 0,
   parameter bit               WritebackStage  = 0,
-  parameter bit               BranchPredictor = 0
+  parameter bit               BranchPredictor = 0,
+  parameter bit               MemECC          = 1'b0
 ) (
   input  logic                      clk_i,
   input  logic                      rst_ni,
@@ -51,12 +51,11 @@ module ibex_id_stage #(
 
   // IF and ID stage signals
   output logic                      pc_set_o,
-  output logic                      pc_set_spec_o,
   output ibex_pkg::pc_sel_e         pc_mux_o,
   output logic                      nt_branch_mispredict_o,
   output logic [31:0]               nt_branch_addr_o,
   output ibex_pkg::exc_pc_sel_e     exc_pc_mux_o,
-  output ibex_pkg::exc_cause_e      exc_cause_o,
+  output ibex_pkg::exc_cause_t      exc_cause_o,
 
   input  logic                      illegal_c_insn_i,
   input  logic                      instr_fetch_err_i,
@@ -132,6 +131,7 @@ module ibex_id_stage #(
 
   input  logic                      lsu_load_err_i,
   input  logic                      lsu_store_err_i,
+  input  logic                      lsu_load_intg_err_i,
 
   // Debug Signal
   output logic                      debug_mode_o,
@@ -189,6 +189,8 @@ module ibex_id_stage #(
 
   // Decoder/Controller, ID stage internal signals
   logic        illegal_insn_dec;
+  logic        illegal_dret_insn;
+  logic        illegal_umode_insn;
   logic        ebrk_insn;
   logic        mret_insn_dec;
   logic        dret_insn_dec;
@@ -199,7 +201,6 @@ module ibex_id_stage #(
   logic        id_exception;
 
   logic        branch_in_dec;
-  logic        branch_spec, branch_set_spec, branch_set_raw_spec;
   logic        branch_set, branch_set_raw, branch_set_raw_d;
   logic        branch_jump_set_done_q, branch_jump_set_done_d;
   logic        branch_not_set;
@@ -530,11 +531,21 @@ module ibex_id_stage #(
   // Controller //
   ////////////////
 
-  assign illegal_insn_o = instr_valid_i & (illegal_insn_dec | illegal_csr_insn_i);
+  // "Executing DRET outside of Debug Mode causes an illegal instruction exception."
+  // [Debug Spec v0.13.2, p.41]
+  assign illegal_dret_insn  = dret_insn_dec & ~debug_mode_o;
+  // Some instructions can only be executed in M-Mode
+  assign illegal_umode_insn = (priv_mode_i != PRIV_LVL_M) &
+                              // MRET must be in M-Mode. TW means trap WFI to M-Mode.
+                              (mret_insn_dec | (csr_mstatus_tw_i & wfi_insn_dec));
+
+  assign illegal_insn_o = instr_valid_i &
+      (illegal_insn_dec | illegal_csr_insn_i | illegal_dret_insn | illegal_umode_insn);
 
   ibex_controller #(
     .WritebackStage (WritebackStage),
-    .BranchPredictor(BranchPredictor)
+    .BranchPredictor(BranchPredictor),
+    .MemECC(MemECC)
   ) controller_i (
     .clk_i (clk_i),
     .rst_ni(rst_ni),
@@ -568,7 +579,6 @@ module ibex_id_stage #(
     // to prefetcher
     .instr_req_o           (instr_req_o),
     .pc_set_o              (pc_set_o),
-    .pc_set_spec_o         (pc_set_spec_o),
     .pc_mux_o              (pc_mux_o),
     .nt_branch_mispredict_o(nt_branch_mispredict_o),
     .exc_pc_mux_o          (exc_pc_mux_o),
@@ -577,13 +587,13 @@ module ibex_id_stage #(
     // LSU
     .lsu_addr_last_i(lsu_addr_last_i),
     .load_err_i     (lsu_load_err_i),
+    .load_intg_err_i(lsu_load_intg_err_i),
     .store_err_i    (lsu_store_err_i),
     .wb_exception_o (wb_exception),
     .id_exception_o (id_exception),
 
     // jump/branch control
     .branch_set_i     (branch_set),
-    .branch_set_spec_i(branch_set_spec),
     .branch_not_set_i (branch_not_set),
     .jump_set_i       (jump_set),
 
@@ -591,7 +601,7 @@ module ibex_id_stage #(
     .csr_mstatus_mie_i(csr_mstatus_mie_i),
     .irq_pending_i    (irq_pending_i),
     .irqs_i           (irqs_i),
-    .irq_nm_i         (irq_nm_i),
+    .irq_nm_ext_i     (irq_nm_i),
     .nmi_mode_o       (nmi_mode_o),
 
     // CSR Controller Signals
@@ -603,7 +613,6 @@ module ibex_id_stage #(
     .csr_save_cause_o     (csr_save_cause_o),
     .csr_mtval_o          (csr_mtval_o),
     .priv_mode_i          (priv_mode_i),
-    .csr_mstatus_tw_i     (csr_mstatus_tw_i),
 
     // Debug Signal
     .debug_mode_o       (debug_mode_o),
@@ -662,8 +671,8 @@ module ibex_id_stage #(
     // Branch set fed straight to controller with branch target ALU
     // (condition pass/fail used same cycle as generated instruction request)
     assign branch_set_raw      = branch_set_raw_d;
-    assign branch_set_raw_spec = branch_spec;
   end else begin : g_branch_set_flop
+    // SEC_CM: CORE.DATA_REG_SW.SCA
     // Branch set flopped without branch target ALU, or in fixed time execution mode
     // (condition pass/fail used next cycle where branch target is calculated)
     logic branch_set_raw_q;
@@ -682,9 +691,6 @@ module ibex_id_stage #(
     assign branch_set_raw      = (BranchTargetALU && !data_ind_timing_i) ? branch_set_raw_d :
                                                                            branch_set_raw_q;
 
-    // Use the speculative branch signal when BTALU is enabled
-    assign branch_set_raw_spec = (BranchTargetALU && !data_ind_timing_i) ? branch_spec :
-                                                                           branch_set_raw_q;
   end
 
   // Track whether the current instruction in ID/EX has done a branch or jump set.
@@ -708,11 +714,11 @@ module ibex_id_stage #(
   // needless extra IF flushes and fetches.
   assign jump_set        = jump_set_raw        & ~branch_jump_set_done_q;
   assign branch_set      = branch_set_raw      & ~branch_jump_set_done_q;
-  assign branch_set_spec = branch_set_raw_spec & ~branch_jump_set_done_q;
 
   // Branch condition is calculated in the first cycle and flopped for use in the second cycle
   // (only used in fixed time execution mode to determine branch destination).
   if (DataIndTiming) begin : g_sec_branch_taken
+    // SEC_CM: CORE.DATA_REG_SW.SCA
     logic branch_taken_q;
 
     always_ff @(posedge clk_i or negedge rst_ni) begin
@@ -777,7 +783,6 @@ module ibex_id_stage #(
     stall_branch            = 1'b0;
     stall_alu               = 1'b0;
     branch_set_raw_d        = 1'b0;
-    branch_spec             = 1'b0;
     branch_not_set          = 1'b0;
     jump_set_raw            = 1'b0;
     perf_branch_o           = 1'b0;
@@ -810,6 +815,7 @@ module ibex_id_stage #(
               // cond branch operation
               // All branches take two cycles in fixed time execution mode, regardless of branch
               // condition.
+              // SEC_CM: CORE.DATA_REG_SW.SCA
               id_fsm_d         = (data_ind_timing_i || (!BranchTargetALU && branch_decision_i)) ?
                                      MULTI_CYCLE : FIRST_CYCLE;
               stall_branch     = (~BranchTargetALU & branch_decision_i) | data_ind_timing_i;
@@ -819,8 +825,6 @@ module ibex_id_stage #(
                 branch_not_set = ~branch_decision_i;
               end
 
-              // Speculative branch (excludes branch_decision_i)
-              branch_spec   = SpecBranch ? 1'b1 : branch_decision_i;
               perf_branch_o = 1'b1;
             end
             jump_in_dec: begin

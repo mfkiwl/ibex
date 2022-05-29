@@ -26,6 +26,15 @@ class SpikeCosim : public simif_t, public Cosim {
   std::vector<std::string> errors;
   bool nmi_mode;
 
+  typedef struct {
+    uint8_t mpp;
+    bool mpie;
+    uint32_t epc;
+    uint32_t cause;
+  } mstack_t;
+
+  mstack_t mstack;
+
   void fixup_csr(int csr_num, uint32_t csr_val);
 
   struct PendingMemAccess {
@@ -54,12 +63,14 @@ class SpikeCosim : public simif_t, public Cosim {
 
   void on_csr_write(const commit_log_reg_t::value_type &reg_change);
 
+  void leave_nmi_mode();
+
   int insn_cnt;
 
  public:
-  SpikeCosim(uint32_t start_pc, uint32_t start_mtvec,
-             const std::string &trace_log_path, bool secure_ibex,
-             bool icache_en);
+  SpikeCosim(const std::string &isa_string, uint32_t start_pc,
+             uint32_t start_mtvec, const std::string &trace_log_path,
+             bool secure_ibex, bool icache_en);
 
   // simif_t implementation
   virtual char *addr_to_mem(reg_t addr) override;

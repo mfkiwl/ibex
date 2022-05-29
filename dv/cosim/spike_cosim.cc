@@ -14,9 +14,9 @@
 #include <iostream>
 #include <sstream>
 
-SpikeCosim::SpikeCosim(uint32_t start_pc, uint32_t start_mtvec,
-                       const std::string &trace_log_path, bool secure_ibex,
-                       bool icache_en)
+SpikeCosim::SpikeCosim(const std::string &isa_string, uint32_t start_pc,
+                       uint32_t start_mtvec, const std::string &trace_log_path,
+                       bool secure_ibex, bool icache_en)
     : nmi_mode(false), pending_iside_error(false) {
   FILE *log_file = nullptr;
   if (trace_log_path.length() != 0) {
@@ -24,9 +24,11 @@ SpikeCosim::SpikeCosim(uint32_t start_pc, uint32_t start_mtvec,
     log_file = log->get();
   }
 
-  processor = std::make_unique<processor_t>("RV32IMC", "MU", DEFAULT_VARCH,
-                                            this, 0, false, log_file, nullptr,
-                                            secure_ibex, icache_en);
+  processor =
+      std::make_unique<processor_t>(isa_string.c_str(), "MU", DEFAULT_VARCH,
+                                    this, 0, false, log_file, std::cerr);
+
+  processor->set_ibex_flags(secure_ibex, icache_en);
 
   processor->set_mmu_capability(IMPL_MMU_SBARE);
   processor->get_state()->pc = start_pc;
@@ -46,17 +48,20 @@ bool SpikeCosim::mmio_load(reg_t addr, size_t len, uint8_t *bytes) {
 
   bool dut_error = false;
 
-  // Incoming access may be an iside or dside access. Calculate 32-bit aligned
-  // address and current 32-bit aligned PC to help determine which.
+  // Incoming access may be an iside or dside access. Use PC to help determine
+  // which.
+  uint32_t pc = processor->get_state()->pc;
   uint32_t aligned_addr = addr & 0xfffffffc;
-  uint32_t aligned_pc = processor->get_state()->pc & 0xfffffffc;
 
   if (pending_iside_error && (aligned_addr == pending_iside_err_addr)) {
     // Check if the incoming access is subject to an iside error, in which case
     // assume it's an iside access and produce an error.
     pending_iside_error = false;
     dut_error = true;
-  } else if (aligned_pc != aligned_addr && (aligned_pc + 4) != aligned_addr) {
+  } else if (addr < pc || addr >= (pc + 8)) {
+    // Spike may attempt to access up to 8-bytes from the PC when fetching, so
+    // only check as a dside access when it falls outside that range.
+
     // Otherwise check if the aligned PC matches with the aligned address or an
     // incremented aligned PC (to capture the unaligned 4-byte instruction
     // case). Assume a successful iside access if either of these checks are
@@ -101,10 +106,6 @@ bool SpikeCosim::backdoor_read_mem(uint32_t addr, size_t len,
 bool SpikeCosim::step(uint32_t write_reg, uint32_t write_reg_data, uint32_t pc,
                       bool sync_trap) {
   assert(write_reg < 32);
-
-  if (pc_is_mret(pc)) {
-    nmi_mode = false;
-  }
 
   uint32_t initial_pc = (processor->get_state()->pc & 0xffffffff);
   bool initial_pc_match = initial_pc == pc;
@@ -167,6 +168,11 @@ bool SpikeCosim::step(uint32_t write_reg, uint32_t write_reg_data, uint32_t pc,
     errors.emplace_back(err_str.str());
 
     return false;
+  }
+
+  if (!sync_trap && pc_is_mret(pc) && nmi_mode) {
+    // Do handling for recoverable NMI
+    leave_nmi_mode();
   }
 
   // Check register writes from executed instruction match what is expected
@@ -285,6 +291,19 @@ void SpikeCosim::on_csr_write(const commit_log_reg_t::value_type &reg_change) {
   fixup_csr(cosim_write_csr, cosim_write_csr_data);
 }
 
+void SpikeCosim::leave_nmi_mode() {
+  nmi_mode = false;
+
+  // Restore CSR status from mstack
+  uint32_t mstatus = processor->get_csr(CSR_MSTATUS);
+  mstatus = set_field(mstatus, MSTATUS_MPP, mstack.mpp);
+  mstatus = set_field(mstatus, MSTATUS_MPIE, mstack.mpie);
+  processor->set_csr(CSR_MSTATUS, mstatus);
+
+  processor->set_csr(CSR_MEPC, mstack.epc);
+  processor->set_csr(CSR_MCAUSE, mstack.cause);
+}
+
 void SpikeCosim::set_mip(uint32_t mip) {
   processor->get_state()->mip->write_with_mask(0xffffffff, mip);
 }
@@ -293,6 +312,13 @@ void SpikeCosim::set_nmi(bool nmi) {
   if (nmi && !nmi_mode && !processor->get_state()->debug_mode) {
     processor->get_state()->nmi = true;
     nmi_mode = true;
+
+    // When NMI is set it is guaranteed NMI trap will be taken at the next step
+    // so save CSR state for recoverable NMI to mstack now.
+    mstack.mpp = get_field(processor->get_csr(CSR_MSTATUS), MSTATUS_MPP);
+    mstack.mpie = get_field(processor->get_csr(CSR_MSTATUS), MSTATUS_MPIE);
+    mstack.epc = processor->get_csr(CSR_MEPC);
+    mstack.cause = processor->get_csr(CSR_MCAUSE);
   }
 }
 
@@ -302,7 +328,11 @@ void SpikeCosim::set_debug_req(bool debug_req) {
 }
 
 void SpikeCosim::set_mcycle(uint64_t mcycle) {
-  processor->get_state()->mcycle = mcycle;
+  // TODO: Spike decrements mcycle on write to hack around an issue it has with
+  // correctly writing minstret. Preferably this write would use a backdoor
+  // access and avoid that decrement but backdoor access isn't part of the
+  // public CSR interface.
+  processor->get_state()->mcycle->write(mcycle + 1);
 }
 
 void SpikeCosim::notify_dside_access(const DSideAccessInfo &access_info) {

@@ -8,6 +8,7 @@
 `endif
 
 `include "prim_assert.sv"
+`include "dv_fcov_macros.svh"
 
 /**
  * Top level module of the ibex RISC-V core
@@ -38,6 +39,8 @@ module ibex_core import ibex_pkg::*; #(
   parameter bit          DummyInstructions = 1'b0,
   parameter bit          RegFileECC        = 1'b0,
   parameter int unsigned RegFileDataWidth  = 32,
+  parameter bit          MemECC            = 1'b0,
+  parameter int unsigned MemDataWidth      = MemECC ? 32 + 7 : 32,
   parameter int unsigned DmHaltAddr        = 32'h1A110800,
   parameter int unsigned DmExceptionAddr   = 32'h1A110808
 ) (
@@ -53,7 +56,7 @@ module ibex_core import ibex_pkg::*; #(
   input  logic                         instr_gnt_i,
   input  logic                         instr_rvalid_i,
   output logic [31:0]                  instr_addr_o,
-  input  logic [31:0]                  instr_rdata_i,
+  input  logic [MemDataWidth-1:0]      instr_rdata_i,
   input  logic                         instr_err_i,
 
   // Data memory interface
@@ -63,8 +66,8 @@ module ibex_core import ibex_pkg::*; #(
   output logic                         data_we_o,
   output logic [3:0]                   data_be_o,
   output logic [31:0]                  data_addr_o,
-  output logic [31:0]                  data_wdata_o,
-  input  logic [31:0]                  data_rdata_i,
+  output logic [MemDataWidth-1:0]      data_wdata_o,
+  input  logic [MemDataWidth-1:0]      data_rdata_i,
   input  logic                         data_err_i,
 
   // Register file interface
@@ -88,6 +91,7 @@ module ibex_core import ibex_pkg::*; #(
   output logic [IC_INDEX_W-1:0]        ic_data_addr_o,
   output logic [LineSizeECC-1:0]       ic_data_wdata_o,
   input  logic [LineSizeECC-1:0]       ic_data_rdata_i [IC_NUM_WAYS],
+  input  logic                         ic_scr_key_valid_i,
 
   // Interrupt inputs
   input  logic                         irq_software_i,
@@ -100,6 +104,9 @@ module ibex_core import ibex_pkg::*; #(
   // Debug Interface
   input  logic                         debug_req_i,
   output crash_dump_t                  crash_dump_o,
+  // SEC_CM: EXCEPTION.CTRL_FLOW.LOCAL_ESC
+  // SEC_CM: EXCEPTION.CTRL_FLOW.GLOBAL_ESC
+  output logic                         double_fault_seen_o,
 
   // RISC-V Formal Interface
   // Does not comply with the coding standards of _i/_o suffixes, but follows
@@ -135,21 +142,20 @@ module ibex_core import ibex_pkg::*; #(
 `endif
 
   // CPU Control Signals
-  input  logic                         fetch_enable_i,
+  // SEC_CM: FETCH.CTRL.LC_GATED
+  input  fetch_enable_t                fetch_enable_i,
   output logic                         alert_minor_o,
-  output logic                         alert_major_o,
+  output logic                         alert_major_internal_o,
+  output logic                         alert_major_bus_o,
+  output logic                         icache_inval_o,
   output logic                         core_busy_o
 );
 
-  localparam int unsigned PMP_NUM_CHAN      = 2;
+  localparam int unsigned PMPNumChan      = 3;
+  // SEC_CM: CORE.DATA_REG_SW.SCA
   localparam bit          DataIndTiming     = SecureIbex;
   localparam bit          PCIncrCheck       = SecureIbex;
   localparam bit          ShadowCSR         = 1'b0;
-  // Speculative branch option, trades-off performance against timing.
-  // Setting this to 1 eases branch target critical paths significantly but reduces performance
-  // by ~3% (based on CoreMark/MHz score).
-  // Set by default in the max PMP config which has the tightest budget for branch target timing.
-  localparam bit          SpecBranch        = PMPEnable & (PMPNumRegions == 16);
 
   // IF/ID signals
   logic        dummy_instr_id;
@@ -179,21 +185,23 @@ module ibex_core import ibex_pkg::*; #(
   logic [31:0] dummy_instr_seed;
   logic        icache_enable;
   logic        icache_inval;
+  logic        icache_ecc_error;
   logic        pc_mismatch_alert;
   logic        csr_shadow_err;
 
   logic        instr_first_cycle_id;
   logic        instr_valid_clear;
   logic        pc_set;
-  logic        pc_set_spec;
   logic        nt_branch_mispredict;
   logic [31:0] nt_branch_addr;
   pc_sel_e     pc_mux_id;                      // Mux selector for next PC
   exc_pc_sel_e exc_pc_mux_id;                  // Mux selector for exception PC
-  exc_cause_e  exc_cause;                      // Exception cause
+  exc_cause_t  exc_cause;                      // Exception cause
 
+  logic        instr_intg_err;
   logic        lsu_load_err;
   logic        lsu_store_err;
+  logic        lsu_load_intg_err;
 
   // LSU signals
   logic        lsu_addr_incr_req;
@@ -301,8 +309,7 @@ module ibex_core import ibex_pkg::*; #(
   logic [33:0]  csr_pmp_addr [PMPNumRegions];
   pmp_cfg_t     csr_pmp_cfg  [PMPNumRegions];
   pmp_mseccfg_t csr_pmp_mseccfg;
-  logic         pmp_req_err  [PMP_NUM_CHAN];
-  logic         instr_req_out;
+  logic         pmp_req_err  [PMPNumChan];
   logic         data_req_out;
 
   logic        csr_save_if;
@@ -316,7 +323,6 @@ module ibex_core import ibex_pkg::*; #(
   logic [31:0] csr_mtval;
   logic        csr_mstatus_tw;
   priv_lvl_e   priv_mode_id;
-  priv_lvl_e   priv_mode_if;
   priv_lvl_e   priv_mode_lsu;
 
   // debug mode and dcsr configuration
@@ -372,10 +378,12 @@ module ibex_core import ibex_pkg::*; #(
     .TagSizeECC       (TagSizeECC),
     .LineSizeECC      (LineSizeECC),
     .PCIncrCheck      (PCIncrCheck),
-    .ResetAll          ( ResetAll          ),
-    .RndCnstLfsrSeed   ( RndCnstLfsrSeed   ),
-    .RndCnstLfsrPerm   ( RndCnstLfsrPerm   ),
-    .BranchPredictor  (BranchPredictor)
+    .ResetAll         (ResetAll),
+    .RndCnstLfsrSeed  (RndCnstLfsrSeed),
+    .RndCnstLfsrPerm  (RndCnstLfsrPerm),
+    .BranchPredictor  (BranchPredictor),
+    .MemECC           (MemECC),
+    .MemDataWidth     (MemDataWidth)
   ) if_stage_i (
     .clk_i (clk_i),
     .rst_ni(rst_ni),
@@ -384,24 +392,25 @@ module ibex_core import ibex_pkg::*; #(
     .req_i      (instr_req_gated),  // instruction request control
 
     // instruction cache interface
-    .instr_req_o    (instr_req_out),
-    .instr_addr_o   (instr_addr_o),
-    .instr_gnt_i    (instr_gnt_i),
-    .instr_rvalid_i (instr_rvalid_i),
-    .instr_rdata_i  (instr_rdata_i),
-    .instr_err_i    (instr_err_i),
-    .instr_pmp_err_i(pmp_req_err[PMP_I]),
+    .instr_req_o       (instr_req_o),
+    .instr_addr_o      (instr_addr_o),
+    .instr_gnt_i       (instr_gnt_i),
+    .instr_rvalid_i    (instr_rvalid_i),
+    .instr_rdata_i     (instr_rdata_i),
+    .instr_bus_err_i   (instr_err_i),
+    .instr_intg_err_o  (instr_intg_err),
 
-    .ic_tag_req_o   (ic_tag_req_o),
-    .ic_tag_write_o (ic_tag_write_o),
-    .ic_tag_addr_o  (ic_tag_addr_o),
-    .ic_tag_wdata_o (ic_tag_wdata_o),
-    .ic_tag_rdata_i (ic_tag_rdata_i),
-    .ic_data_req_o  (ic_data_req_o),
-    .ic_data_write_o(ic_data_write_o),
-    .ic_data_addr_o (ic_data_addr_o),
-    .ic_data_wdata_o(ic_data_wdata_o),
-    .ic_data_rdata_i(ic_data_rdata_i),
+    .ic_tag_req_o      (ic_tag_req_o),
+    .ic_tag_write_o    (ic_tag_write_o),
+    .ic_tag_addr_o     (ic_tag_addr_o),
+    .ic_tag_wdata_o    (ic_tag_wdata_o),
+    .ic_tag_rdata_i    (ic_tag_rdata_i),
+    .ic_data_req_o     (ic_data_req_o),
+    .ic_data_write_o   (ic_data_write_o),
+    .ic_data_addr_o    (ic_data_addr_o),
+    .ic_data_wdata_o   (ic_data_wdata_o),
+    .ic_data_rdata_i   (ic_data_rdata_i),
+    .ic_scr_key_valid_i(ic_scr_key_valid_i),
 
     // outputs to ID stage
     .instr_valid_id_o        (instr_valid_id),
@@ -417,11 +426,12 @@ module ibex_core import ibex_pkg::*; #(
     .dummy_instr_id_o        (dummy_instr_id),
     .pc_if_o                 (pc_if),
     .pc_id_o                 (pc_id),
+    .pmp_err_if_i            (pmp_req_err[PMP_I]),
+    .pmp_err_if_plus2_i      (pmp_req_err[PMP_I2]),
 
     // control signals
     .instr_valid_clear_i   (instr_valid_clear),
     .pc_set_i              (pc_set),
-    .pc_set_spec_i         (pc_set_spec),
     .pc_mux_i              (pc_mux_id),
     .nt_branch_mispredict_i(nt_branch_mispredict),
     .exc_pc_mux_i          (exc_pc_mux_id),
@@ -432,6 +442,7 @@ module ibex_core import ibex_pkg::*; #(
     .dummy_instr_seed_i    (dummy_instr_seed),
     .icache_enable_i       (icache_enable),
     .icache_inval_i        (icache_inval),
+    .icache_ecc_error_o    (icache_ecc_error),
 
     // branch targets
     .branch_target_ex_i(branch_target_ex),
@@ -454,11 +465,26 @@ module ibex_core import ibex_pkg::*; #(
   // available
   assign perf_iside_wait = id_in_ready & ~instr_valid_id;
 
-  // Qualify the instruction request with PMP error
-  assign instr_req_o = instr_req_out & ~pmp_req_err[PMP_I];
+  // Multi-bit fetch enable used when SecureIbex == 1. When SecureIbex == 0 only use the bottom-bit
+  // of fetch_enable_i. Ensure the multi-bit encoding has the bottom bit set for on and unset for
+  // off so FetchEnableOn/FetchEnableOff can be used without needing to know the value of
+  // SecureIbex.
+  `ASSERT_INIT(FetchEnableSecureOnBottomBitSet,    FetchEnableOn[0] == 1'b1)
+  `ASSERT_INIT(FetchEnableSecureOffBottomBitClear, FetchEnableOff[0] == 1'b0)
 
   // fetch_enable_i can be used to stop the core fetching new instructions
-  assign instr_req_gated = instr_req_int & fetch_enable_i;
+  if (SecureIbex) begin : g_instr_req_gated_secure
+    // For secure Ibex fetch_enable_i must be a specific multi-bit pattern to enable instruction
+    // fetch
+    // SEC_CM: FETCH.CTRL.LC_GATED
+    assign instr_req_gated = instr_req_int & (fetch_enable_i == FetchEnableOn);
+  end else begin : g_instr_req_gated_non_secure
+    // For non secure Ibex only the bottom bit of fetch enable is considered
+    logic unused_fetch_enable;
+    assign unused_fetch_enable = ^fetch_enable_i[$bits(fetch_enable_t)-1:1];
+
+    assign instr_req_gated = instr_req_int & fetch_enable_i[0];
+  end
 
   //////////////
   // ID stage //
@@ -470,9 +496,9 @@ module ibex_core import ibex_pkg::*; #(
     .RV32B          (RV32B),
     .BranchTargetALU(BranchTargetALU),
     .DataIndTiming  (DataIndTiming),
-    .SpecBranch     (SpecBranch),
     .WritebackStage (WritebackStage),
-    .BranchPredictor(BranchPredictor)
+    .BranchPredictor(BranchPredictor),
+    .MemECC         (MemECC)
   ) id_stage_i (
     .clk_i (clk_i),
     .rst_ni(rst_ni),
@@ -498,7 +524,6 @@ module ibex_core import ibex_pkg::*; #(
     .id_in_ready_o         (id_in_ready),
     .instr_req_o           (instr_req_int),
     .pc_set_o              (pc_set),
-    .pc_set_spec_o         (pc_set_spec),
     .pc_mux_o              (pc_mux_id),
     .nt_branch_mispredict_o(nt_branch_mispredict),
     .nt_branch_addr_o      (nt_branch_addr),
@@ -564,8 +589,9 @@ module ibex_core import ibex_pkg::*; #(
     .lsu_addr_incr_req_i(lsu_addr_incr_req),
     .lsu_addr_last_i    (lsu_addr_last),
 
-    .lsu_load_err_i (lsu_load_err),
-    .lsu_store_err_i(lsu_store_err),
+    .lsu_load_err_i     (lsu_load_err),
+    .lsu_load_intg_err_i(lsu_load_intg_err),
+    .lsu_store_err_i    (lsu_store_err),
 
     // Interrupt Signals
     .csr_mstatus_mie_i(csr_mstatus_mie),
@@ -621,6 +647,7 @@ module ibex_core import ibex_pkg::*; #(
     .instr_id_done_o  (instr_id_done)
   );
 
+  assign icache_inval_o = icache_inval;
   // for RVFI only
   assign unused_illegal_insn_id = illegal_insn_id;
 
@@ -676,7 +703,10 @@ module ibex_core import ibex_pkg::*; #(
   assign data_req_o   = data_req_out & ~pmp_req_err[PMP_D];
   assign lsu_resp_err = lsu_load_err | lsu_store_err;
 
-  ibex_load_store_unit load_store_unit_i (
+  ibex_load_store_unit #(
+    .MemECC(MemECC),
+    .MemDataWidth(MemDataWidth)
+  ) load_store_unit_i (
     .clk_i (clk_i),
     .rst_ni(rst_ni),
 
@@ -684,14 +714,14 @@ module ibex_core import ibex_pkg::*; #(
     .data_req_o    (data_req_out),
     .data_gnt_i    (data_gnt_i),
     .data_rvalid_i (data_rvalid_i),
-    .data_err_i    (data_err_i),
+    .data_bus_err_i(data_err_i),
     .data_pmp_err_i(pmp_req_err[PMP_D]),
 
-    .data_addr_o (data_addr_o),
-    .data_we_o   (data_we_o),
-    .data_be_o   (data_be_o),
-    .data_wdata_o(data_wdata_o),
-    .data_rdata_i(data_rdata_i),
+    .data_addr_o      (data_addr_o),
+    .data_we_o        (data_we_o),
+    .data_be_o        (data_be_o),
+    .data_wdata_o     (data_wdata_o),
+    .data_rdata_i     (data_rdata_i),
 
     // signals to/from ID/EX stage
     .lsu_we_i      (lsu_we),
@@ -713,8 +743,9 @@ module ibex_core import ibex_pkg::*; #(
     .lsu_resp_valid_o(lsu_resp_valid),
 
     // exception signals
-    .load_err_o (lsu_load_err),
-    .store_err_o(lsu_store_err),
+    .load_err_o     (lsu_load_err),
+    .store_err_o    (lsu_store_err),
+    .load_intg_err_o(lsu_load_intg_err),
 
     .busy_o(lsu_busy),
 
@@ -775,6 +806,7 @@ module ibex_core import ibex_pkg::*; #(
 
   if (RegFileECC) begin : gen_regfile_ecc
 
+    // SEC_CM: DATA_REG_SW.INTEGRITY
     logic [1:0] rf_ecc_err_a, rf_ecc_err_b;
     logic       rf_ecc_err_a_id, rf_ecc_err_b_id;
 
@@ -837,11 +869,12 @@ module ibex_core import ibex_pkg::*; #(
   ///////////////////
 
   // Minor alert - core is in a recoverable state
-  // TODO add I$ ECC errors here
-  assign alert_minor_o = 1'b0;
+  assign alert_minor_o = icache_ecc_error;
 
-  // Major alert - core is unrecoverable
-  assign alert_major_o = rf_ecc_err_comb | pc_mismatch_alert | csr_shadow_err;
+  // Major internal alert - core is unrecoverable
+  assign alert_major_internal_o = rf_ecc_err_comb | pc_mismatch_alert | csr_shadow_err;
+  // Major bus alert
+  assign alert_major_bus_o = lsu_load_intg_err | instr_intg_err;
 
   // Explict INC_ASSERT block to avoid unused signal lint warnings were asserts are not included
   `ifdef INC_ASSERT
@@ -918,7 +951,6 @@ module ibex_core import ibex_pkg::*; #(
     // Hart ID from outside
     .hart_id_i      (hart_id_i),
     .priv_mode_id_o (priv_mode_id),
-    .priv_mode_if_o (priv_mode_if),
     .priv_mode_lsu_o(priv_mode_lsu),
 
     // mtvec
@@ -983,6 +1015,8 @@ module ibex_core import ibex_pkg::*; #(
     .csr_mtval_i       (csr_mtval),
     .illegal_csr_insn_o(illegal_csr_insn_id),
 
+    .double_fault_seen_o,
+
     // performance counter related signals
     .instr_ret_i                (perf_instr_ret_wb),
     .instr_ret_compressed_i     (perf_instr_ret_compressed_wb),
@@ -1009,24 +1043,25 @@ module ibex_core import ibex_pkg::*; #(
   `ASSERT_KNOWN_IF(IbexCsrWdataIntKnown, cs_registers_i.csr_wdata_int, csr_op_en)
 
   if (PMPEnable) begin : g_pmp
-    logic [33:0] pmp_req_addr [PMP_NUM_CHAN];
-    pmp_req_e    pmp_req_type [PMP_NUM_CHAN];
-    priv_lvl_e   pmp_priv_lvl [PMP_NUM_CHAN];
+    logic [33:0] pmp_req_addr [PMPNumChan];
+    pmp_req_e    pmp_req_type [PMPNumChan];
+    priv_lvl_e   pmp_priv_lvl [PMPNumChan];
 
-    assign pmp_req_addr[PMP_I] = {2'b00, instr_addr_o[31:0]};
-    assign pmp_req_type[PMP_I] = PMP_ACC_EXEC;
-    assign pmp_priv_lvl[PMP_I] = priv_mode_if;
-    assign pmp_req_addr[PMP_D] = {2'b00, data_addr_o[31:0]};
-    assign pmp_req_type[PMP_D] = data_we_o ? PMP_ACC_WRITE : PMP_ACC_READ;
-    assign pmp_priv_lvl[PMP_D] = priv_mode_lsu;
+    assign pmp_req_addr[PMP_I]  = {2'b00, pc_if};
+    assign pmp_req_type[PMP_I]  = PMP_ACC_EXEC;
+    assign pmp_priv_lvl[PMP_I]  = priv_mode_id;
+    assign pmp_req_addr[PMP_I2] = {2'b00, (pc_if + 32'd2)};
+    assign pmp_req_type[PMP_I2] = PMP_ACC_EXEC;
+    assign pmp_priv_lvl[PMP_I2] = priv_mode_id;
+    assign pmp_req_addr[PMP_D]  = {2'b00, data_addr_o[31:0]};
+    assign pmp_req_type[PMP_D]  = data_we_o ? PMP_ACC_WRITE : PMP_ACC_READ;
+    assign pmp_priv_lvl[PMP_D]  = priv_mode_lsu;
 
     ibex_pmp #(
       .PMPGranularity(PMPGranularity),
-      .PMPNumChan    (PMP_NUM_CHAN),
+      .PMPNumChan    (PMPNumChan),
       .PMPNumRegions (PMPNumRegions)
     ) pmp_i (
-      .clk_i            (clk_i),
-      .rst_ni           (rst_ni),
       // Interface to CSRs
       .csr_pmp_cfg_i    (csr_pmp_cfg),
       .csr_pmp_addr_i   (csr_pmp_addr),
@@ -1039,19 +1074,19 @@ module ibex_core import ibex_pkg::*; #(
     );
   end else begin : g_no_pmp
     // Unused signal tieoff
-    priv_lvl_e unused_priv_lvl_if, unused_priv_lvl_ls;
+    priv_lvl_e unused_priv_lvl_ls;
     logic [33:0] unused_csr_pmp_addr [PMPNumRegions];
     pmp_cfg_t    unused_csr_pmp_cfg  [PMPNumRegions];
     pmp_mseccfg_t unused_csr_pmp_mseccfg;
-    assign unused_priv_lvl_if = priv_mode_if;
     assign unused_priv_lvl_ls = priv_mode_lsu;
     assign unused_csr_pmp_addr = csr_pmp_addr;
     assign unused_csr_pmp_cfg = csr_pmp_cfg;
     assign unused_csr_pmp_mseccfg = csr_pmp_mseccfg;
 
     // Output tieoff
-    assign pmp_req_err[PMP_I] = 1'b0;
-    assign pmp_req_err[PMP_D] = 1'b0;
+    assign pmp_req_err[PMP_I]  = 1'b0;
+    assign pmp_req_err[PMP_I2] = 1'b0;
+    assign pmp_req_err[PMP_D]  = 1'b0;
   end
 
 `ifdef RVFI
@@ -1569,5 +1604,74 @@ module ibex_core import ibex_pkg::*; #(
 
   // Certain parameter combinations are not supported
   `ASSERT_INIT(IllegalParamSecure, !(SecureIbex && (RV32M == RV32MNone)))
+
+
+  //////////
+  // FCOV //
+  //////////
+
+`ifndef SYNTHESIS
+  // fcov signals for CSR access. These are complicated by illegal accesses. Where an access is
+  // legal `csr_op_en` signals the operation occurring, but this is deasserted where an access is
+  // illegal. Instead `illegal_insn_id` confirms the instruction is taking an illegal instruction
+  // exception.
+  // All CSR operations perform a read, `CSR_OP_READ` is the only one that only performs a read
+  `DV_FCOV_SIGNAL(logic, csr_read_only,
+      (csr_op == CSR_OP_READ) && csr_access && (csr_op_en || illegal_insn_id))
+  `DV_FCOV_SIGNAL(logic, csr_write,
+      cs_registers_i.csr_wr && csr_access && (csr_op_en || illegal_insn_id))
+
+  if (PMPEnable) begin : g_pmp_fcov_signals
+    logic [PMPNumRegions-1:0] fcov_pmp_region_ichan_priority;
+    logic [PMPNumRegions-1:0] fcov_pmp_region_ichan2_priority;
+    logic [PMPNumRegions-1:0] fcov_pmp_region_dchan_priority;
+
+    logic unused_fcov_pmp_region_priority;
+
+    assign unused_fcov_pmp_region_priority = ^{fcov_pmp_region_ichan_priority,
+                                               fcov_pmp_region_ichan2_priority,
+                                               fcov_pmp_region_dchan_priority};
+
+    for (genvar i_region = 0; i_region < PMPNumRegions; i_region += 1) begin : g_pmp_region_fcov
+      `DV_FCOV_SIGNAL(logic, pmp_region_ichan_access,
+          g_pmp.pmp_i.region_match_all[PMP_I][i_region] & if_stage_i.if_id_pipe_reg_we)
+      `DV_FCOV_SIGNAL(logic, pmp_region_ichan2_access,
+          g_pmp.pmp_i.region_match_all[PMP_I2][i_region] & if_stage_i.if_id_pipe_reg_we)
+      `DV_FCOV_SIGNAL(logic, pmp_region_dchan_access,
+          g_pmp.pmp_i.region_match_all[PMP_D][i_region] & data_req_out)
+      // pmp_cfg[5:6] is reserved and because of that the width of it inside cs_registers module
+      // is 6-bit.
+      // TODO: Cover writes to the reserved bits
+      `DV_FCOV_SIGNAL(logic, warl_check_pmpcfg,
+          fcov_csr_write &&
+          (cs_registers_i.g_pmp_registers.g_pmp_csrs[i_region].u_pmp_cfg_csr.wr_data_i !=
+          {cs_registers_i.csr_wdata_int[(i_region%4)*PMP_CFG_W+:5],
+           cs_registers_i.csr_wdata_int[(i_region%4)*PMP_CFG_W+7]}))
+
+      if (i_region > 0) begin : g_region_priority
+        assign fcov_pmp_region_ichan_priority[i_region] =
+          g_pmp.pmp_i.region_match_all[PMP_I][i_region] &
+          ~|g_pmp.pmp_i.region_match_all[PMP_I][i_region-1:0];
+
+        assign fcov_pmp_region_ichan2_priority[i_region] =
+          g_pmp.pmp_i.region_match_all[PMP_I2][i_region] &
+          ~|g_pmp.pmp_i.region_match_all[PMP_I2][i_region-1:0];
+
+        assign fcov_pmp_region_dchan_priority[i_region] =
+          g_pmp.pmp_i.region_match_all[PMP_D][i_region] &
+          ~|g_pmp.pmp_i.region_match_all[PMP_D][i_region-1:0];
+      end else begin : g_region_highest_priority
+        assign fcov_pmp_region_ichan_priority[i_region] =
+          g_pmp.pmp_i.region_match_all[PMP_I][i_region];
+
+        assign fcov_pmp_region_ichan2_priority[i_region] =
+          g_pmp.pmp_i.region_match_all[PMP_I2][i_region];
+
+        assign fcov_pmp_region_dchan_priority[i_region] =
+          g_pmp.pmp_i.region_match_all[PMP_D][i_region];
+      end
+    end
+  end
+`endif
 
 endmodule

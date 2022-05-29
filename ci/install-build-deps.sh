@@ -47,6 +47,7 @@ case "$ID-$VERSION_ID" in
         python3-setuptools \
         python3-wheel \
         python3-yaml \
+        python3-dev \
         srecord \
         zlib1g-dev \
         git \
@@ -58,7 +59,7 @@ case "$ID-$VERSION_ID" in
         libelf-dev \
         clang-format \
         "verilator-$VERILATOR_VERSION" \
-        spike-cosim \
+        "ibex-cosim-$IBEX_COSIM_VERSION" \
         xz-utils
 
       # Python dependencies

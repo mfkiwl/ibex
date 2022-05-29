@@ -63,6 +63,32 @@ It is assumed that the interrupt handler signals completion of the handling rout
 
 In Debug Mode, all interrupts including the NMI are ignored independent of ``mstatus``.MIE and the content of the ``mie`` CSR.
 
+.. _internal-interrupts:
+
+Internal Interrupts
+-------------------
+
+Some events produce an 'internal interrupt'.
+An internal interrupt produces an NMI (using the same vector as the external NMI) with ``mcause`` and ``mtval`` being set to indicate the cause of the internal interrupt.
+The external NMI takes priority over all internal interrupts.
+Entering the handler for an internal interrupt automatically clears the internal interrupt.
+Internal interrupts are considered to be non-recoverable in general.
+Specific details of how an internal interrupt relates to the event that triggers it are listed below.
+Given these details it may be possible for software to recover from an internal interrupt under specific circumstances.
+
+The possible ``mcause`` values for an internal interrupt as listed below:
+
++-------------+-------------------------------------------------------------------------------------------------------------+
+| ``mcause``  | Description                                                                                                 |
++-------------+-------------------------------------------------------------------------------------------------------------+
+| 0xFFFFFFFE0 | Load integrity error internal interrupt.                                                                    |
+|             | Only generated when SecureIbex == 0.                                                                        |
+|             | ``mtval`` gives the faulting address.                                                                       |
+|             | The interrupt will be taken at most one instruction after the faulting load.                                |
+|             | In particular a load or store immediately after a faulting load may execute before the interrupt is taken.  |
++-------------+-------------------------------------------------------------------------------------------------------------+
+| 0x80000001F | External NMI                                                                                                |
++-------------+-------------------------------------------------------------------------------------------------------------+
 
 Recoverable Non-Maskable Interrupt
 ----------------------------------
@@ -148,3 +174,19 @@ The purpose of the nonstandard ``mstack`` CSRs in Ibex is only to support recove
 These CSRs are not accessible by software.
 While handling an NMI, all interrupts are ignored independent of ``mstatus``.MIE.
 Nested NMIs are not supported.
+
+.. _double-fault-detect:
+
+Double Fault Detection
+----------------------
+
+Ibex has a mechanism to detect when a double fault has occurred.
+A double fault is defined as a synchronous exception occurring whilst handling a previous synchronous exception.
+The ``cpuctrl`` custom CSR has fields to provide software visibility and access to this mechanism.
+
+When a synchronous exception occurs, Ibex sets ``cpuctrl``.sync_exception_seen.
+Ibex clears ``cpuctrl``.sync_exception_seen when ``mret`` is executed.
+If a synchronous exception occurs whilst ``cpuctrl``.sync_exception_seen is set, a double fault has been detected.
+
+When a double fault is detected, the ``double_fault_seen_o`` output is asserted for one cycle and ``cpuctrl``.double_fault_seen is set.
+Note that writing the ``cpuctrl``.double_fault_seen field has no effect on the ``double_fault_seen_o`` output.

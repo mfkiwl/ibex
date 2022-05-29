@@ -10,6 +10,7 @@ module core_ibex_tb_top;
   import core_ibex_test_pkg::*;
 
   wire clk;
+  wire scramble_req;
   wire rst_n;
 
   clk_rst_if     ibex_clk_if(.clk(clk), .rst_n(rst_n));
@@ -32,6 +33,8 @@ module core_ibex_tb_top;
 
   core_ibex_ifetch_if ifetch_if(.clk(clk));
 
+  core_ibex_ifetch_pmp_if ifetch_pmp_if(.clk(clk));
+
   // VCS does not support overriding enum and string parameters via command line. Instead, a
   // `define is used that can be set from the command line. If no value has been specified, this
   // gives a default. Other simulators don't take the detour via `define and can override the
@@ -48,84 +51,102 @@ module core_ibex_tb_top;
     `define IBEX_CFG_RegFile ibex_pkg::RegFileFF
   `endif
 
-  parameter bit          PMPEnable       = 1'b0;
-  parameter int unsigned PMPGranularity  = 0;
-  parameter int unsigned PMPNumRegions   = 4;
-  parameter bit RV32E                    = 1'b0;
-  parameter ibex_pkg::rv32m_e RV32M      = `IBEX_CFG_RV32M;
-  parameter ibex_pkg::rv32b_e RV32B      = `IBEX_CFG_RV32B;
-  parameter ibex_pkg::regfile_e RegFile  = `IBEX_CFG_RegFile;
-  parameter bit BranchTargetALU          = 1'b0;
-  parameter bit WritebackStage           = 1'b0;
-  parameter bit ICache                   = 1'b0;
-  parameter bit ICacheECC                = 1'b0;
-  parameter bit BranchPredictor          = 1'b0;
-  parameter bit SecureIbex               = 1'b0;
+  parameter bit          PMPEnable        = 1'b0;
+  parameter int unsigned PMPGranularity   = 0;
+  parameter int unsigned PMPNumRegions    = 4;
+  parameter int unsigned MHPMCounterNum   = 0;
+  parameter int unsigned MHPMCounterWidth = 40;
+  parameter bit RV32E                     = 1'b0;
+  parameter ibex_pkg::rv32m_e RV32M       = `IBEX_CFG_RV32M;
+  parameter ibex_pkg::rv32b_e RV32B       = `IBEX_CFG_RV32B;
+  parameter ibex_pkg::regfile_e RegFile   = `IBEX_CFG_RegFile;
+  parameter bit BranchTargetALU           = 1'b0;
+  parameter bit WritebackStage            = 1'b0;
+  parameter bit ICache                    = 1'b0;
+  parameter bit ICacheECC                 = 1'b0;
+  parameter bit BranchPredictor           = 1'b0;
+  parameter bit SecureIbex                = 1'b0;
+  parameter bit ICacheScramble            = 1'b0;
+  parameter bit DbgTriggerEn              = 1'b0;
+
 
   ibex_top_tracing #(
-    .DmHaltAddr      (32'h`BOOT_ADDR + 'h0 ),
-    .DmExceptionAddr (32'h`BOOT_ADDR + 'h4 ),
-    .PMPEnable       (PMPEnable        ),
-    .PMPGranularity  (PMPGranularity   ),
-    .PMPNumRegions   (PMPNumRegions    ),
-    .RV32E           (RV32E            ),
-    .RV32M           (RV32M            ),
-    .RV32B           (RV32B            ),
-    .RegFile         (RegFile          ),
-    .BranchTargetALU (BranchTargetALU  ),
-    .WritebackStage  (WritebackStage   ),
-    .ICache          (ICache           ),
-    .ICacheECC       (ICacheECC        ),
-    .SecureIbex      (SecureIbex       ),
-    .BranchPredictor (BranchPredictor  )
+    .DmHaltAddr       (32'h`BOOT_ADDR + 'h0 ),
+    .DmExceptionAddr  (32'h`BOOT_ADDR + 'h4 ),
+    .PMPEnable        (PMPEnable        ),
+    .PMPGranularity   (PMPGranularity   ),
+    .PMPNumRegions    (PMPNumRegions    ),
+    .MHPMCounterNum   (MHPMCounterNum   ),
+    .MHPMCounterWidth (MHPMCounterWidth ),
+    .RV32E            (RV32E            ),
+    .RV32M            (RV32M            ),
+    .RV32B            (RV32B            ),
+    .RegFile          (RegFile          ),
+    .BranchTargetALU  (BranchTargetALU  ),
+    .WritebackStage   (WritebackStage   ),
+    .ICache           (ICache           ),
+    .ICacheECC        (ICacheECC        ),
+    .SecureIbex       (SecureIbex       ),
+    .ICacheScramble   (ICacheScramble   ),
+    .BranchPredictor  (BranchPredictor  ),
+    .DbgTriggerEn     (DbgTriggerEn     )
+
   ) dut (
-    .clk_i              (clk                  ),
-    .rst_ni             (rst_n                ),
+    .clk_i                  (clk                        ),
+    .rst_ni                 (rst_n                      ),
 
-    .test_en_i          (1'b0                 ),
-    .scan_rst_ni        (1'b1                 ),
-    .ram_cfg_i          ('b0                  ),
+    .test_en_i              (1'b0                       ),
+    .scan_rst_ni            (1'b1                       ),
+    .ram_cfg_i              ('b0                        ),
 
-    .hart_id_i          (32'b0                ),
-    .boot_addr_i        (32'h`BOOT_ADDR       ), // align with spike boot address
+    .hart_id_i              (32'b0                      ),
+    .boot_addr_i            (32'h`BOOT_ADDR             ), // align with spike boot address
 
-    .instr_req_o        (instr_mem_vif.request),
-    .instr_gnt_i        (instr_mem_vif.grant  ),
-    .instr_rvalid_i     (instr_mem_vif.rvalid ),
-    .instr_addr_o       (instr_mem_vif.addr   ),
-    .instr_rdata_i      (instr_mem_vif.rdata  ),
-    .instr_rdata_intg_i (instr_mem_vif.rintg  ),
-    .instr_err_i        (instr_mem_vif.error  ),
+    .instr_req_o            (instr_mem_vif.request      ),
+    .instr_gnt_i            (instr_mem_vif.grant        ),
+    .instr_rvalid_i         (instr_mem_vif.rvalid       ),
+    .instr_addr_o           (instr_mem_vif.addr         ),
+    .instr_rdata_i          (instr_mem_vif.rdata        ),
+    .instr_rdata_intg_i     (instr_mem_vif.rintg        ),
+    .instr_err_i            (instr_mem_vif.error        ),
 
-    .data_req_o         (data_mem_vif.request ),
-    .data_gnt_i         (data_mem_vif.grant   ),
-    .data_rvalid_i      (data_mem_vif.rvalid  ),
-    .data_addr_o        (data_mem_vif.addr    ),
-    .data_we_o          (data_mem_vif.we      ),
-    .data_be_o          (data_mem_vif.be      ),
-    .data_rdata_i       (data_mem_vif.rdata   ),
-    .data_rdata_intg_i  (data_mem_vif.rintg   ),
-    .data_wdata_o       (data_mem_vif.wdata   ),
-    .data_wdata_intg_o  (data_mem_vif.wintg   ),
-    .data_err_i         (data_mem_vif.error   ),
+    .data_req_o             (data_mem_vif.request       ),
+    .data_gnt_i             (data_mem_vif.grant         ),
+    .data_rvalid_i          (data_mem_vif.rvalid        ),
+    .data_addr_o            (data_mem_vif.addr          ),
+    .data_we_o              (data_mem_vif.we            ),
+    .data_be_o              (data_mem_vif.be            ),
+    .data_rdata_i           (data_mem_vif.rdata         ),
+    .data_rdata_intg_i      (data_mem_vif.rintg         ),
+    .data_wdata_o           (data_mem_vif.wdata         ),
+    .data_wdata_intg_o      (data_mem_vif.wintg         ),
+    .data_err_i             (data_mem_vif.error         ),
 
-    .irq_software_i     (irq_vif.irq_software ),
-    .irq_timer_i        (irq_vif.irq_timer    ),
-    .irq_external_i     (irq_vif.irq_external ),
-    .irq_fast_i         (irq_vif.irq_fast     ),
-    .irq_nm_i           (irq_vif.irq_nm       ),
+    .irq_software_i         (irq_vif.irq_software       ),
+    .irq_timer_i            (irq_vif.irq_timer          ),
+    .irq_external_i         (irq_vif.irq_external       ),
+    .irq_fast_i             (irq_vif.irq_fast           ),
+    .irq_nm_i               (irq_vif.irq_nm             ),
 
-    .debug_req_i        (dut_if.debug_req     ),
-    .crash_dump_o       (                     ),
+    .scramble_key_valid_i   ('0                         ),
+    .scramble_key_i         ('0                         ),
+    .scramble_nonce_i       ('0                         ),
+    .scramble_req_o         (                           ),
 
-    .fetch_enable_i     (dut_if.fetch_enable  ),
-    .alert_minor_o      (dut_if.alert_minor   ),
-    .alert_major_o      (dut_if.alert_major   ),
-    .core_sleep_o       (dut_if.core_sleep    )
+    .debug_req_i            (dut_if.debug_req           ),
+    .crash_dump_o           (                           ),
+    .double_fault_seen_o    (                           ),
+
+    .fetch_enable_i         (dut_if.fetch_enable        ),
+    .alert_minor_o          (dut_if.alert_minor         ),
+    .alert_major_internal_o (dut_if.alert_major_internal),
+    .alert_major_bus_o      (dut_if.alert_major_bus     ),
+    .core_sleep_o           (dut_if.core_sleep          )
   );
 
   // We should never see any alerts triggered in normal testing
-  `ASSERT(NoAlertsTriggered, !dut_if.alert_minor && !dut_if.alert_major, clk, !rst_n)
+  `ASSERT(NoAlertsTriggered,
+    !dut_if.alert_minor && !dut_if.alert_major_internal && !dut_if.alert_major_bus, clk, !rst_n)
 
   // Data load/store vif connection
   assign data_mem_vif.reset = ~rst_n;
@@ -209,6 +230,11 @@ module core_ibex_tb_top;
   assign ifetch_if.fetch_err       = dut.u_ibex_top.u_ibex_core.if_stage_i.fetch_err;
   assign ifetch_if.fetch_err_plus2 = dut.u_ibex_top.u_ibex_core.if_stage_i.fetch_err_plus2;
 
+  assign ifetch_pmp_if.reset         = ~dut.u_ibex_top.u_ibex_core.if_stage_i.rst_ni;
+  assign ifetch_pmp_if.fetch_valid   = dut.u_ibex_top.u_ibex_core.instr_req_o;
+  assign ifetch_pmp_if.fetch_addr    = dut.u_ibex_top.u_ibex_core.instr_addr_o;
+  assign ifetch_pmp_if.fetch_pmp_err = dut.u_ibex_top.u_ibex_core.pmp_req_err[ibex_pkg::PMP_I];
+
   assign data_mem_vif.misaligned_first =
     dut.u_ibex_top.u_ibex_core.load_store_unit_i.handle_misaligned_d |
     ((dut.u_ibex_top.u_ibex_core.load_store_unit_i.lsu_type_i == 2'b01) &
@@ -237,6 +263,13 @@ module core_ibex_tb_top;
     uvm_config_db#(virtual ibex_mem_intf)::set(null, "*instr_if_response*", "vif", instr_mem_vif);
     uvm_config_db#(virtual irq_if)::set(null, "*", "vif", irq_vif);
     uvm_config_db#(virtual core_ibex_ifetch_if)::set(null, "*", "ifetch_if", ifetch_if);
+    uvm_config_db#(virtual core_ibex_ifetch_pmp_if)::set(null, "*", "ifetch_pmp_if", ifetch_pmp_if);
+
+    // Expose ISA config parameters to UVM DB
+    uvm_config_db#(bit)::set(null, "*", "RV32E", RV32E);
+    uvm_config_db#(ibex_pkg::rv32m_e)::set(null, "*", "RV32M", RV32M);
+    uvm_config_db#(ibex_pkg::rv32b_e)::set(null, "*", "RV32B", RV32B);
+
     run_test();
   end
 
