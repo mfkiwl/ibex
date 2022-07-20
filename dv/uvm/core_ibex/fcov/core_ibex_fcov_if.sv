@@ -151,7 +151,7 @@ interface core_ibex_fcov_if import ibex_pkg::*; (
   // register writes minus some exclusions as an ALU operation.
   `ASSERT(InstrCategoryALUCorrect, id_instr_category == InstrCategoryALU |->
       (id_stage_i.rf_wdata_sel == RF_WD_EX) && id_stage_i.rf_we_dec && ~id_stage_i.mult_sel_ex_o &&
-      ~id_stage_i.div_sel_ex_o && ~id_stage_i.lsu_req_dec && ~id_stage_i.jump_in_dec);
+      ~id_stage_i.div_sel_ex_o && ~id_stage_i.lsu_req_dec && ~id_stage_i.jump_in_dec)
 
   `ASSERT(InstrCategoryMulCorrect,
       id_instr_category == InstrCategoryMul |-> id_stage_i.mult_sel_ex_o)
@@ -276,6 +276,22 @@ interface core_ibex_fcov_if import ibex_pkg::*; (
     end
   end
 
+  logic instr_id_matches_trigger_d, instr_id_matches_trigger_q;
+
+  assign instr_id_matches_trigger_d = id_stage_i.controller_i.trigger_match_i &&
+                                      id_stage_i.controller_i.fcov_debug_entry_if;
+
+  // Delay instruction matching trigger point since it is catched in IF stage.
+  // We would want to cross it with decoded instruction categories and it does not matter
+  // when exactly we are hitting the condition.
+  always @(posedge clk_i or negedge rst_ni) begin
+    if (!rst_ni) begin
+      instr_id_matches_trigger_q <= 1'b0;
+    end else begin
+      instr_id_matches_trigger_q <= instr_id_matches_trigger_d;
+    end
+  end
+
   // Keep track of previous data addr of Store to catch RAW hazard caused by STORE->LOAD
   logic [31:0]     prev_store_addr;
   logic [31:0]     data_addr_incr;
@@ -309,6 +325,14 @@ interface core_ibex_fcov_if import ibex_pkg::*; (
   assign raw_hz = id_stage_i.instr_type_wb_o == WB_INSTR_STORE &&
                   id_instr_category == InstrCategoryLoad &&
                   prev_store_addr == curr_data_addr;
+
+  // Collect all the interrupts for collecting them in different bins.
+  logic [5:0] fcov_irqs = {id_stage_i.controller_i.irq_nm_ext_i,
+                           id_stage_i.controller_i.irq_nm_int,
+                           (|id_stage_i.controller_i.irqs_i.irq_fast),
+                           id_stage_i.controller_i.irqs_i.irq_external,
+                           id_stage_i.controller_i.irqs_i.irq_software,
+                           id_stage_i.controller_i.irqs_i.irq_timer};
 
   logic            instr_unstalled;
   logic            instr_unstalled_last;
@@ -452,10 +476,26 @@ interface core_ibex_fcov_if import ibex_pkg::*; (
     cp_debug_mode: coverpoint debug_mode;
 
     `DV_FCOV_EXPR_SEEN(debug_wakeup, id_stage_i.controller_i.fcov_debug_wakeup)
-    `DV_FCOV_EXPR_SEEN(interrupt_taken, id_stage_i.controller_i.fcov_interrupt_taken)
     `DV_FCOV_EXPR_SEEN(debug_entry_if, id_stage_i.controller_i.fcov_debug_entry_if)
     `DV_FCOV_EXPR_SEEN(debug_entry_id, id_stage_i.controller_i.fcov_debug_entry_id)
     `DV_FCOV_EXPR_SEEN(pipe_flush, id_stage_i.controller_i.fcov_pipe_flush)
+    `DV_FCOV_EXPR_SEEN(single_step_taken, id_stage_i.controller_i.fcov_debug_single_step_taken)
+    `DV_FCOV_EXPR_SEEN(insn_trigger_enter_debug, instr_id_matches_trigger_q)
+    `DV_FCOV_EXPR_SEEN(insn_trigger_exception, instr_id_matches_trigger_q &&
+                                               id_stage_i.controller_i.fcov_pipe_flush)
+
+    cp_nmi_taken: coverpoint (id_stage_i.controller_i.nmi_mode_d &
+                              (~id_stage_i.controller_i.nmi_mode_q)) iff
+                             (id_stage_i.controller_i.fcov_interrupt_taken);
+
+    cp_interrupt_taken: coverpoint fcov_irqs iff (id_stage_i.controller_i.fcov_interrupt_taken){
+      wildcard bins nmi_external  = {6'b1?????};
+      wildcard bins nmi_internal  = {6'b01????};
+      wildcard bins irq_fast      = {6'b001???};
+      wildcard bins irq_external  = {6'b0001??};
+      wildcard bins irq_software  = {6'b00001?};
+      wildcard bins irq_timer     = {6'b000001};
+    }
 
     cp_controller_fsm: coverpoint id_stage_i.controller_i.ctrl_fsm_cs {
       bins out_of_reset = (RESET => BOOT_SET);
@@ -491,6 +531,29 @@ interface core_ibex_fcov_if import ibex_pkg::*; (
     `DV_FCOV_EXPR_SEEN(irq_continue_sleep, id_stage_i.controller_i.ctrl_fsm_cs == SLEEP &&
                                            id_stage_i.controller_i.ctrl_fsm_ns == SLEEP &&
                                            (|cs_registers_i.mip))
+
+
+    cp_single_step_instr: coverpoint id_instr_category iff
+                                     (id_stage_i.controller_i.fcov_debug_single_step_taken) {
+      // Not certain if InstrCategoryOtherIllegal can occur. Put it in illegal_bins for now and
+      // revisit if any issues are seen
+      illegal_bins illegal = {InstrCategoryOther, InstrCategoryOtherIllegal};
+    }
+
+    // Only sample the bus error from the first access of misaligned load/store when we are in
+    // the data phase of the second access. Without this, we cannot sample the case when both
+    // first and second access fails.
+    cp_misaligned_first_data_bus_err: coverpoint load_store_unit_i.fcov_mis_bus_err_1_q iff
+      (load_store_unit_i.fcov_mis_rvalid_2);
+
+    cp_misaligned_second_data_bus_err: coverpoint load_store_unit_i.data_bus_err_i iff
+      (load_store_unit_i.fcov_mis_rvalid_2);
+
+    misaligned_data_bus_err_cross: cross cp_misaligned_first_data_bus_err,
+                                         cp_misaligned_second_data_bus_err;
+
+    misaligned_insn_bus_err_cross: cross id_stage_i.instr_fetch_err_i,
+                                         id_stage_i.instr_fetch_err_plus2_i;
 
     controller_instr_cross: cross cp_controller_fsm, cp_id_instr_category {
     // Only expecting DECODE => FLUSH when we have the instruction categories constrained below.
@@ -561,8 +624,8 @@ interface core_ibex_fcov_if import ibex_pkg::*; (
         binsof(cp_id_stage_state) intersect {PipeStageEmpty};
     }
 
-    interrupt_taken_instr_cross: cross cp_interrupt_taken, instr_unstalled_last,
-      cp_id_instr_category_last;
+    interrupt_taken_instr_cross: cross cp_nmi_taken, instr_unstalled_last,
+      cp_id_instr_category_last iff (id_stage_i.controller_i.fcov_interrupt_taken);
 
     debug_instruction_cross: cross cp_debug_mode, cp_id_instr_category;
 
