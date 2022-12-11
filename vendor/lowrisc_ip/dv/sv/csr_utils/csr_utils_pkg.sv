@@ -39,6 +39,10 @@ package csr_utils_pkg;
     outstanding_accesses = 0;
   endfunction
 
+  function automatic bit has_outstanding_access();
+    return outstanding_accesses > 0;
+  endfunction
+
   // timeout may happen if we issue too many non-blocking accesses at once
   // limit the nonblocking items to be up to max outstanding
   task automatic wait_if_max_outstanding_accesses_reached(int max = max_outstanding_accesses);
@@ -202,9 +206,9 @@ package csr_utils_pkg;
             decrement_outstanding_access();
           end
           begin
-            wait_timeout(timeout_ns, msg_id,
-                         $sformatf("Timeout waiting to csr_wr %0s (addr=0x%0h)",
-                                   csr.get_full_name(), csr.get_address()));
+            `DV_WAIT_TIMEOUT(timeout_ns, msg_id,
+                             $sformatf("Timeout waiting to csr_wr %0s (addr=0x%0h)",
+                                       csr.get_full_name(), csr.get_address()))
           end
         join_any
         disable fork;
@@ -350,9 +354,9 @@ package csr_utils_pkg;
             decrement_outstanding_access();
           end
           begin
-            wait_timeout(timeout_ns, msg_id,
-                         $sformatf("Timeout waiting to csr_rd %0s (addr=0x%0h)",
-                                   ptr.get_full_name(), csr_or_fld.csr.get_address()));
+            `DV_WAIT_TIMEOUT(timeout_ns, msg_id,
+                             $sformatf("Timeout waiting to csr_rd %0s (addr=0x%0h)",
+                                       ptr.get_full_name(), csr_or_fld.csr.get_address()))
           end
         join_any
         disable fork;
@@ -535,8 +539,8 @@ package csr_utils_pkg;
             endcase
           end
           begin
-            wait_timeout(timeout_ns, msg_id, $sformatf("timeout %0s (addr=0x%0h) == 0x%0h",
-                ptr.get_full_name(), csr_or_fld.csr.get_address(), exp_data));
+            `DV_WAIT_TIMEOUT(timeout_ns, msg_id, $sformatf("timeout %0s (addr=0x%0h) == 0x%0h",
+                ptr.get_full_name(), csr_or_fld.csr.get_address(), exp_data))
           end
         join_any
         disable fork;
@@ -584,9 +588,9 @@ package csr_utils_pkg;
             decrement_outstanding_access();
           end
           begin : mem_rd_timeout
-            wait_timeout(timeout_ns, msg_id,
-                         $sformatf("Timeout waiting to csr_rd %0s (addr=0x%0h)",
-                                   ptr.get_full_name(), offset));
+            `DV_WAIT_TIMEOUT(timeout_ns, msg_id,
+                             $sformatf("Timeout waiting to mem_rd %0s (addr=0x%0h)",
+                                       ptr.get_full_name(), offset))
           end
         join_any
         disable fork;
@@ -635,9 +639,9 @@ package csr_utils_pkg;
             decrement_outstanding_access();
           end
           begin
-            wait_timeout(timeout_ns, msg_id,
-                         $sformatf("Timeout waiting to csr_wr %0s (addr=0x%0h)",
-                                   ptr.get_full_name(), offset));
+            `DV_WAIT_TIMEOUT(timeout_ns, msg_id,
+                             $sformatf("Timeout waiting to mem_wr %0s (addr=0x%0h)",
+                                       ptr.get_full_name(), offset))
           end
         join_any
         disable fork;

@@ -23,6 +23,7 @@ module ibex_register_file_ff #(
 
   input  logic                 test_en_i,
   input  logic                 dummy_instr_id_i,
+  input  logic                 dummy_instr_wb_i,
 
   //Read port R1
   input  logic [4:0]           raddr_a_i,
@@ -45,9 +46,8 @@ module ibex_register_file_ff #(
   localparam int unsigned ADDR_WIDTH = RV32E ? 4 : 5;
   localparam int unsigned NUM_WORDS  = 2**ADDR_WIDTH;
 
-  logic [NUM_WORDS-1:0][DataWidth-1:0] rf_reg;
-  logic [NUM_WORDS-1:1][DataWidth-1:0] rf_reg_q;
-  logic [NUM_WORDS-1:0]                we_a_dec;
+  logic [DataWidth-1:0] rf_reg   [NUM_WORDS];
+  logic [NUM_WORDS-1:0] we_a_dec;
 
   always_comb begin : we_a_decoder
     for (int unsigned i = 0; i < NUM_WORDS; i++) begin
@@ -88,13 +88,17 @@ module ibex_register_file_ff #(
 
   // No flops for R0 as it's hard-wired to 0
   for (genvar i = 1; i < NUM_WORDS; i++) begin : g_rf_flops
+    logic [DataWidth-1:0] rf_reg_q;
+
     always_ff @(posedge clk_i or negedge rst_ni) begin
       if (!rst_ni) begin
-        rf_reg_q[i] <= WordZeroVal;
+        rf_reg_q <= WordZeroVal;
       end else if (we_a_dec[i]) begin
-        rf_reg_q[i] <= wdata_a_i;
+        rf_reg_q <= wdata_a_i;
       end
     end
+
+    assign rf_reg[i] = rf_reg_q;
   end
 
   // With dummy instructions enabled, R0 behaves as a real register but will always return 0 for
@@ -105,7 +109,7 @@ module ibex_register_file_ff #(
     logic [DataWidth-1:0] rf_r0_q;
 
     // Write enable for dummy R0 register (waddr_a_i will always be 0 for dummy instructions)
-    assign we_r0_dummy = we_a_i & dummy_instr_id_i;
+    assign we_r0_dummy = we_a_i & dummy_instr_wb_i;
 
     always_ff @(posedge clk_i or negedge rst_ni) begin
       if (!rst_ni) begin
@@ -119,14 +123,12 @@ module ibex_register_file_ff #(
     assign rf_reg[0] = dummy_instr_id_i ? rf_r0_q : WordZeroVal;
 
   end else begin : g_normal_r0
-    logic unused_dummy_instr_id;
-    assign unused_dummy_instr_id = dummy_instr_id_i;
+    logic unused_dummy_instr;
+    assign unused_dummy_instr = dummy_instr_id_i ^ dummy_instr_wb_i;
 
     // R0 is nil
     assign rf_reg[0] = WordZeroVal;
   end
-
-  assign rf_reg[NUM_WORDS-1:1] = rf_reg_q[NUM_WORDS-1:1];
 
   assign rdata_a_o = rf_reg[raddr_a_i];
   assign rdata_b_o = rf_reg[raddr_b_i];

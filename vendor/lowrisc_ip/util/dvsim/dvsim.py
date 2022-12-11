@@ -33,6 +33,7 @@ from pathlib import Path
 import Launcher
 import LauncherFactory
 import LocalLauncher
+import SgeLauncher
 from CfgFactory import make_cfg
 from Deploy import RunTest
 from Timer import Timer
@@ -267,12 +268,21 @@ def parse_reseed_multiplier(as_str: str) -> float:
 
 
 def parse_args():
+    cfg_metavar = "<cfg-hjson-file>"
     parser = argparse.ArgumentParser(
         description=wrapped_docstring(),
-        formatter_class=argparse.RawDescriptionHelpFormatter)
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        # #12377 [dvsim] prints invalid usage when constructed by argparse
+        # Disable it pending more verbose and automatic solution and document in
+        # help message
+        usage='%(prog)s {} [-h] [options]'.format(cfg_metavar),
+        epilog="Either place the positional argument ahead of the optional args:\n" \
+               "eg. `dvsim.py {} -i ITEM ITEM` \n" \
+               "or end a sequence of optional args with `--`:\n" \
+               "eg. `dvsim.py -i ITEM ITEM -- {}`\n".format(cfg_metavar, cfg_metavar))
 
     parser.add_argument("cfg",
-                        metavar="<cfg-hjson-file>",
+                        metavar=cfg_metavar,
                         help="""Configuration hjson file.""")
 
     parser.add_argument("--version",
@@ -286,7 +296,8 @@ def parse_args():
               "optional for running simulations (where it can "
               "be set in an .hjson file), but is required for "
               "other flows. Possible tools include: vcs, questa,"
-              "xcelium, ascentlint, verixcdc, veriblelint, verilator, dc."))
+              "xcelium, ascentlint, verixcdc, mrdc, veriblelint,"
+              "verilator, dc."))
 
     parser.add_argument("--list",
                         "-l",
@@ -416,6 +427,11 @@ def parse_args():
                         help=('The options for each build_mode in this list '
                               'are applied to all build and run targets.'))
 
+    buildg.add_argument("--build-timeout-mins",
+                        type=int,
+                        help=('Wall-clock timeout for builds in minutes: if '
+                              'the build takes longer it will be killed.'))
+
     disg.add_argument("--gui",
                       action='store_true',
                       help=('Run the flow in interactive mode instead of the '
@@ -463,6 +479,11 @@ def parse_args():
                       help=("Disable the default behaviour, where failing "
                             "tests are automatically rerun with waves "
                             "enabled."))
+
+    rung.add_argument("--run-timeout-mins",
+                      type=int,
+                      help=('Wall-clock timeout for runs in minutes: if '
+                            'the run takes longer it will be killed.'))
 
     rung.add_argument("--verbosity",
                       "-v",
@@ -522,13 +543,9 @@ def parse_args():
     waveg.add_argument(
         "--waves",
         "-w",
-        nargs="?",
-        choices=["default", "fsdb", "shm", "vpd", "vcd", "evcd", "fst"],
-        const="default",
-        help=("Enable dumping of waves. It takes an optional "
-              "argument to pick the desired wave format. If "
-              "the optional argument is not supplied, it picks "
-              "whatever is the default for the chosen tool. "
+        choices=["fsdb", "shm", "vpd", "vcd", "evcd", "fst"],
+        help=("Enable dumping of waves. It takes an "
+              "argument to pick the desired wave format."
               "By default, dumping waves is not enabled."))
 
     waveg.add_argument("--max-waves",
@@ -672,6 +689,7 @@ def main():
     # Register the common deploy settings.
     Timer.print_interval = args.print_interval
     LocalLauncher.LocalLauncher.max_parallel = args.max_parallel
+    SgeLauncher.SgeLauncher.max_parallel = args.max_parallel
     Launcher.Launcher.max_odirs = args.max_odirs
     LauncherFactory.set_launcher_type(args.local)
 
