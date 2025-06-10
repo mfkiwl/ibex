@@ -72,7 +72,7 @@ Ibex implements all the Control and Status Registers (CSRs) listed in the follow
 +---------+--------------------+--------+-----------------------------------------------+
 |  0x7B3  | ``dscratch1``      | RW     | Debug Scratch Register 1                      |
 +---------+--------------------+--------+-----------------------------------------------+
-|  0x7C0  | ``cpuctrl``        | WARL   | CPU Control Register (Custom CSR)             |
+|  0x7C0  | ``cpuctrlsts``     | WARL   | CPU Control and Status Register (Custom CSR)  |
 +---------+--------------------+--------+-----------------------------------------------+
 |  0x7C1  | ``secureseed``     | WARL   | Security feature random seed (Custom CSR)     |
 +---------+--------------------+--------+-----------------------------------------------+
@@ -113,7 +113,7 @@ Machine Status (mstatus)
 
 CSR Address: ``0x300``
 
-Reset Value: ``0x0000_1800``
+Reset Value: ``0x0000_0080``
 
 +-------+-----+---------------------------------------------------------------------------------+
 | Bit#  | R/W | Description                                                                     |
@@ -606,7 +606,7 @@ CSR Address: ``0xF11``
 
 Reset Value: ``0x0000_0000``
 
-Use the ``CSR_MVENDORID_VALUE`` parameter in :file:`rtl/ibex_pkg.sv` to change the fixed value.
+Use the top-level parameter ``CsrMvendorId`` in :file:`rtl/ibex_top.sv` to change the fixed value.
 Details of what the ID represents can be found in the RISC-V Privileged Specification.
 
 Machine Architecture ID (marchid)
@@ -628,7 +628,7 @@ CSR Address: ``0xF13``
 
 Reset Value: ``0x0000_0000``
 
-Use the ``CSR_MIMPID_VALUE`` parameter in :file:`rtl/ibex_pkg.sv` to change the fixed value.
+Use the top-level parameter ``CsrMimpId`` in :file:`rtl/ibex_top.sv` to change the fixed value.
 Details of what the ID represents can be found in the RISC-V Privileged Specification.
 
 .. _csr-mhartid:
